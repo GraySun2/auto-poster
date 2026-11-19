@@ -130,6 +130,18 @@ function platformsFor(item, m, aenv) {
   return { on, off };
 }
 
+// Each app keeps its own place in the queue: an item is finished on an app once the log has a post
+// there (or it gave up after maxAttempts), so an app set up later still gets the videos the others
+// already posted.
+const entryFor = (log, m, id) => log.posts.find((p) => p.id === id && p.mode === logMode(m));
+const doneOn = (entry, name) => { const r = entry?.results?.[name]; return Boolean(r && (r.ok || r.attempts >= MAX_ATTEMPTS)); };
+function owed(item, m, log) {
+  const entry = entryFor(log, m, item.id);
+  // A dry run previews apps whose secrets are missing, but only for videos nothing has posted yet.
+  const { on, off } = platformsFor(item, m === "dry-run" && entry ? "live" : m, envFor(accountOf(item)));
+  return { on: on.filter((n) => !doneOn(entry, n)), off: [...off, ...on.filter((n) => doneOn(entry, n)).map((n) => `${n}: already posted by autopost`)], entry };
+}
+
 // ---- validate ------------------------------------------------------------------------------------
 
 function validate({ files = true } = {}) {
@@ -175,9 +187,11 @@ function validate({ files = true } = {}) {
 // ---- plan ----------------------------------------------------------------------------------------
 
 function nextItem(log, m, acct) {
-  const done = new Set(log.posts.filter((p) => p.mode === logMode(m)).map((p) => p.id));
-  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !allPosted(it) && !done.has(it.id)) ?? null;
+  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && owed(it, m, log).on.length) ?? null;
 }
+// Every slot an account has used, counting each app's post (an app can catch up in a later slot).
+const usedSlots = (log, m, acct) => new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct)
+  .flatMap((p) => [p.slot, ...Object.values(p.results).map((r) => r.slot)]).filter(Boolean));
 
 function makePlan() {
   const m = mode();
@@ -202,7 +216,7 @@ function makePlan() {
       // Each account keeps its own times and its own place in the queue; one post per run.
       const waiting = [];
       for (const acct of Object.keys(accounts())) {
-        const used = new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct).map((p) => p.slot));
+        const used = usedSlots(log, m, acct);
         const slot = dueSlot(now, scheduleFor(acct), used);
         if (!slot) { waiting.push(`${acct} next ${upcomingSlots(now, scheduleFor(acct), 1)[0] ?? "none set"}`); continue; }
         const item = nextItem(log, m, acct);
@@ -249,8 +263,7 @@ async function run() {
   const acct = accountOf(item);
   const aenv = envFor(acct);
   const log = readLog();
-  let entry = log.posts.find((p) => p.id === item.id && p.mode === logMode(m));
-  const { on, off } = platformsFor(item, m, aenv);
+  let { on, off, entry } = owed(item, m, log);
   const targets = plan.job === "retry"
     ? Object.entries(entry.results).filter(([, r]) => !r.ok && r.attempts < MAX_ATTEMPTS).map(([n]) => n)
     : on;
@@ -283,11 +296,11 @@ async function run() {
     const prev = entry.results[name] ?? { attempts: 0 };
     try {
       const r = await postTo(name, item, files, m, aenv);
-      entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), ...r };
+      entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, ...r };
       lines.push(`- **${name}**: posted${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
     } catch (e) {
       failed++;
-      entry.results[name] = { ok: false, attempts: prev.attempts + 1, at: new Date().toISOString(), error: e.message.slice(0, 1000) };
+      entry.results[name] = { ok: false, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, error: e.message.slice(0, 1000) };
       const more = prev.attempts + 1 < MAX_ATTEMPTS ? "will try again next hour" : "gave up after " + MAX_ATTEMPTS + " tries";
       lines.push(`- **${name}**: FAILED, ${more}: ${e.message.slice(0, 500)}`);
     }
@@ -326,11 +339,10 @@ function status() {
   const m = mode();
   const log = readLog();
   const mine = log.posts.filter((p) => p.mode === logMode(m));
-  const done = new Set(mine.map((p) => p.id));
   const lines = [`### Autopost status (mode ${m})`, ""];
   for (const acct of Object.keys(accounts())) {
     const items = (queue.items ?? []).filter((it) => accountOf(it) === acct);
-    const left = items.filter((it) => !it.hold && !allPosted(it) && !done.has(it.id));
+    const left = items.filter((it) => !it.hold && owed(it, m, log).on.length);
     lines.push(
       `**Account ${acct}**: posted ${mine.filter((p) => entryAccount(p) === acct).length} by autopost, ${items.filter(allPosted).length} marked as posted by hand on every app. Left: ${left.length}. On hold: ${items.filter((i) => i.hold).length}.`,
       `Next up: ${left.slice(0, 3).map((i) => i.id).join(", ") || "nothing"}`,
