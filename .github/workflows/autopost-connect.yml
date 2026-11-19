@@ -16,6 +16,10 @@ on:
         description: "tiktok-link: leave empty. tiktok: the code= part of the address. Instagram: the token from the Graph API Explorer"
         type: string
         required: false
+      account:
+        description: "Which account in config.json (empty = the first one)"
+        type: string
+        required: false
       page_name:
         description: "Instagram only, if you have several Pages: the Page's name"
         type: string
@@ -44,12 +48,10 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           AUTOPOST_ADMIN_TOKEN: ${{ secrets.AUTOPOST_ADMIN_TOKEN }}
-          TIKTOK_CLIENT_KEY: ${{ vars.TIKTOK_CLIENT_KEY || secrets.TIKTOK_CLIENT_KEY }}
-          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
-          TIKTOK_REDIRECT_URI: ${{ vars.TIKTOK_REDIRECT_URI }}
+          AUTOPOST_SECRETS: ${{ toJSON(secrets) }}
+          AUTOPOST_VARS: ${{ toJSON(vars) }}
+          AUTOPOST_ACCOUNT: ${{ inputs.account }}
           TIKTOK_CODE: ${{ inputs.app == 'tiktok' && inputs.pasted || '' }}
-          META_APP_ID: ${{ secrets.META_APP_ID }}
-          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
           META_USER_TOKEN: ${{ inputs.app == 'instagram' && inputs.pasted || '' }}
           META_PAGE_NAME: ${{ inputs.page_name }}
         run: node autopost/autopost.mjs connect-${{ inputs.app }}

@@ -65,22 +65,61 @@ function output(name, value) {
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `${name}<<__EOF__\n${value}\n__EOF__\n`);
 }
 
+// ---- accounts ------------------------------------------------------------------------------------
+// config.accounts names each channel set, e.g. { "main": {}, "second": { "slots": {...}, "platforms": {...} } }.
+// The first account uses the plain secret names (YOUTUBE_REFRESH_TOKEN); every other account adds its name
+// in capitals (YOUTUBE_REFRESH_TOKEN_SECOND). App keys (client ids and secrets) may be shared: an account
+// without its own falls back to the plain ones. Account tokens never fall back, so a video can't reach the
+// wrong channel. A queue item picks its account with "account"; without it, it goes to the first account.
+const accounts = () => config.accounts ?? { main: {} };
+const firstAccount = () => Object.keys(accounts())[0];
+const accountOf = (item) => item.account ?? firstAccount();
+const suffixOf = (acct) => (acct === firstAccount() ? "" : "_" + acct.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
+const PER_ACCOUNT = ["YOUTUBE_REFRESH_TOKEN", "INSTAGRAM_USER_ID", "INSTAGRAM_ACCESS_TOKEN", "TIKTOK_REFRESH_TOKEN"];
+const SHAREABLE = ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "META_APP_ID", "META_APP_SECRET", "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "TIKTOK_REDIRECT_URI"];
+
+function allValues() {
+  // The workflow hands over every repository secret and variable as JSON, so new accounts need no workflow edit.
+  const parse = (v) => { try { return v ? JSON.parse(v) : {}; } catch { return {}; } };
+  const out = { ...parse(env.AUTOPOST_VARS), ...parse(env.AUTOPOST_SECRETS) };
+  for (const [k, v] of Object.entries(env)) if (v && /^(YOUTUBE|INSTAGRAM|TIKTOK|META)_/.test(k)) out[k] = v;
+  return out;
+}
+
+// The environment one account's posts run with: its own tokens under the plain names.
+function envFor(acct) {
+  if (!accounts()[acct]) throw new Error(`account "${acct}" is not in config.json's accounts`);
+  const all = allValues();
+  const sfx = suffixOf(acct);
+  const e = { ...env, AUTOPOST_SECRET_SUFFIX: sfx, AUTOPOST_ACCOUNT_NAME: acct };
+  for (const k of [...PER_ACCOUNT, ...SHAREABLE]) {
+    const v = all[k + sfx] || (sfx && SHAREABLE.includes(k) ? all[k] : undefined) || (!sfx ? all[k] : undefined);
+    if (v) e[k] = v; else delete e[k];
+  }
+  return e;
+}
+const optsFor = (acct, name) => ({ ...(config.platforms?.[name] ?? {}), ...(accounts()[acct]?.platforms?.[name] ?? {}) });
+const scheduleFor = (acct) => ({ ...config, slots: accounts()[acct]?.slots ?? config.slots });
+const entryAccount = (p) => p.account ?? firstAccount();
+
 const mediaPath = (rel) => (rel ? resolve(ROOT, config.mediaRoot ?? "media", rel) : null);
 
 // `posted` marks what was posted by hand before autopost: true or any text = every app, a list = those apps.
 const postedBy = (item, name) => Array.isArray(item.posted) ? item.posted.includes(name) : Boolean(item.posted);
-const allPosted = (item) => Object.keys(PLATFORMS).filter((n) => config.platforms?.[n]?.enabled).every((n) => postedBy(item, n));
+const allPosted = (item) => Object.keys(PLATFORMS).filter((n) => optsFor(accountOf(item), n).enabled).every((n) => postedBy(item, n));
 
 // Which platforms an item goes to, and why any are left out.
-function platformsFor(item, m) {
+function platformsFor(item, m, aenv) {
   const on = [], off = [];
+  const acct = accountOf(item);
   for (const [name, mod] of Object.entries(PLATFORMS)) {
-    const opts = config.platforms?.[name] ?? {};
+    const opts = optsFor(acct, name);
     if (!opts.enabled) { off.push(`${name}: turned off in config.json`); continue; }
     if (item.platforms && !item.platforms.includes(name)) { off.push(`${name}: not in this item's platforms`); continue; }
     if (postedBy(item, name)) { off.push(`${name}: already posted by hand`); continue; }
     if (!item[name]) { off.push(`${name}: no ${name} words in queue.json`); continue; }
-    const missing = mod.SECRETS.filter((s) => !env[s]);
+    const sfx = suffixOf(acct);
+    const missing = mod.SECRETS.filter((s) => !aenv[s]).map((s) => (PER_ACCOUNT.includes(s) ? s + sfx : s));
     if (missing.length) {
       if (m !== "dry-run") { off.push(`${name}: secrets not set (${missing.join(", ")})`); continue; }
       off.push(`${name}: listed above as a preview, but its secrets are not set yet (${missing.join(", ")})`);
@@ -96,6 +135,10 @@ function platformsFor(item, m) {
 function validate({ files = true } = {}) {
   const problems = [];
   try { validateSlots(config.slots ?? {}); } catch (e) { problems.push(e.message); }
+  for (const [name, a] of Object.entries(accounts())) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) problems.push(`account name "${name}": use letters, digits, - or _`);
+    if (a.slots) try { validateSlots(a.slots); } catch (e) { problems.push(`account ${name}: ${e.message}`); }
+  }
   try { new Intl.DateTimeFormat("en-US", { timeZone: config.timezone }); } catch { problems.push(`config.timezone "${config.timezone}" is not a time zone name (example: America/Chicago)`); }
   const seen = new Set();
   for (const [i, it] of (queue.items ?? []).entries()) {
@@ -104,6 +147,7 @@ function validate({ files = true } = {}) {
     if (seen.has(it.id)) problems.push(`${at}: the id is used twice`);
     seen.add(it.id);
     if (!it.video) problems.push(`${at}: needs a video`);
+    if (it.account && !accounts()[it.account]) problems.push(`${at}: account "${it.account}" is not in config.json's accounts`);
     if (it.youtube) {
       if (!it.youtube.title) problems.push(`${at}: youtube.title is empty`);
       else if (it.youtube.title.length > 100) problems.push(`${at}: youtube.title is over 100 characters`);
@@ -130,9 +174,9 @@ function validate({ files = true } = {}) {
 
 // ---- plan ----------------------------------------------------------------------------------------
 
-function nextItem(log, m) {
+function nextItem(log, m, acct) {
   const done = new Set(log.posts.filter((p) => p.mode === logMode(m)).map((p) => p.id));
-  return (queue.items ?? []).find((it) => !it.hold && !allPosted(it) && !done.has(it.id)) ?? null;
+  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !allPosted(it) && !done.has(it.id)) ?? null;
 }
 
 function makePlan() {
@@ -147,17 +191,26 @@ function makePlan() {
   } else {
     // 1. A platform that failed on an earlier post gets another try first, without using up a slot.
     const retry = log.posts.find((p) => p.mode === logMode(m) && Object.values(p.results).some((r) => !r.ok && r.attempts < MAX_ATTEMPTS));
-    const used = new Set(log.posts.filter((p) => p.mode === logMode(m)).map((p) => p.slot));
-    const slot = postNow ? `manual ${now.toISOString()}` : dueSlot(now, config, used);
     if (retry && m !== "dry-run") {
-      plan = { ...plan, job: "retry", id: retry.id, why: `retrying what failed on ${retry.id}` };
-    } else if (slot) {
-      const item = nextItem(log, m);
-      if (!item) plan.why = `slot ${slot} is due but the queue is empty: add videos to queue.json`;
-      else plan = { ...plan, job: "post", id: item.id, slot, why: postNow ? "posting now (run by hand)" : `slot ${slot} is due` };
+      plan = { ...plan, job: "retry", id: retry.id, account: entryAccount(retry), why: `retrying what failed on ${retry.id}` };
+    } else if (postNow) {
+      const only = env.AUTOPOST_ACCOUNT?.trim() || null;
+      const item = nextItem(log, m, only);
+      if (!item) plan.why = `nothing left to post${only ? ` for account ${only}` : ""}: add videos to queue.json`;
+      else plan = { ...plan, job: "post", id: item.id, account: accountOf(item), slot: `manual ${now.toISOString()}`, why: "posting now (run by hand)" };
     } else {
-      const { ymd } = localParts(now, config.timezone);
-      plan.why = `no slot due (${ymd}, ${config.timezone}); next: ${upcomingSlots(now, config, 1)[0] ?? "none set"}`;
+      // Each account keeps its own times and its own place in the queue; one post per run.
+      const waiting = [];
+      for (const acct of Object.keys(accounts())) {
+        const used = new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct).map((p) => p.slot));
+        const slot = dueSlot(now, scheduleFor(acct), used);
+        if (!slot) { waiting.push(`${acct} next ${upcomingSlots(now, scheduleFor(acct), 1)[0] ?? "none set"}`); continue; }
+        const item = nextItem(log, m, acct);
+        if (!item) { waiting.push(`${acct}: slot ${slot} is due but its queue is empty`); continue; }
+        plan = { ...plan, job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` };
+        break;
+      }
+      if (plan.job === "none") plan.why = `no slot due (${localParts(now, config.timezone).ymd}, ${config.timezone}); ${waiting.join("; ")}`;
     }
   }
   if (plan.id) {
@@ -173,13 +226,13 @@ function makePlan() {
 
 // ---- run -----------------------------------------------------------------------------------------
 
-async function postTo(name, item, files, m) {
-  const opts = config.platforms[name];
-  if (name === "youtube") return youtube.post(item, files, opts, env, m === "test" ? "private" : (opts.privacy ?? "public"));
-  if (name === "instagram") return instagram.post(item, files, opts, env);
+async function postTo(name, item, files, m, aenv) {
+  const opts = optsFor(accountOf(item), name);
+  if (name === "youtube") return youtube.post(item, files, opts, aenv, m === "test" ? "private" : (opts.privacy ?? "public"));
+  if (name === "instagram") return instagram.post(item, files, opts, aenv);
   if (name === "tiktok") {
     const privacy = m === "test" ? "SELF_ONLY" : (opts.privacy ?? "PUBLIC_TO_EVERYONE");
-    return tiktok.post(item, files, opts, env, privacy);
+    return tiktok.post(item, files, opts, aenv, privacy);
   }
 }
 
@@ -193,9 +246,11 @@ async function run() {
   const problems = validate({ files: true }).filter((p) => p.includes(`(${item.id})`));
   if (problems.length) { summary(`### Autopost: can't post ${item.id}\n\n${problems.map((p) => `- ${p}`).join("\n")}`); return 1; }
 
+  const acct = accountOf(item);
+  const aenv = envFor(acct);
   const log = readLog();
   let entry = log.posts.find((p) => p.id === item.id && p.mode === logMode(m));
-  const { on, off } = platformsFor(item, m);
+  const { on, off } = platformsFor(item, m, aenv);
   const targets = plan.job === "retry"
     ? Object.entries(entry.results).filter(([, r]) => !r.ok && r.attempts < MAX_ATTEMPTS).map(([n]) => n)
     : on;
@@ -203,9 +258,9 @@ async function run() {
   if (m === "dry-run") {
     const size = (statSync(files.video).size / 1048576).toFixed(1);
     summary([
-      `### Autopost dry run: would post \`${item.id}\` (${plan.why})`, "",
+      `### Autopost dry run: would post \`${item.id}\` to account ${acct} (${plan.why})`, "",
       `Video: ${config.mediaRoot ?? "media"}/${item.video} (${size} MB)`,
-      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${config.platforms.youtube.privacy ?? "public"}` : n === "tiktok" ? `via ${config.platforms.tiktok.method ?? "inbox"}` : "reel"}`),
+      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${optsFor(acct, "youtube").privacy ?? "public"}` : n === "tiktok" ? `via ${optsFor(acct, "tiktok").method ?? "inbox"}` : "reel"}`),
       ...off.map((o) => `- left out: ${o}`),
       "", "Nothing was posted. Set the repository variable AUTOPOST_MODE to `test` or `live` to post.",
     ].join("\n"));
@@ -218,16 +273,16 @@ async function run() {
     return 1;
   }
   if (!entry) {
-    entry = { id: item.id, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off };
+    entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off };
     log.posts.push(entry);
   }
 
   let failed = 0;
-  const lines = [`### Autopost (${m}): ${item.id}`, ""];
+  const lines = [`### Autopost (${m}): ${item.id} to account ${acct}`, ""];
   for (const name of targets) {
     const prev = entry.results[name] ?? { attempts: 0 };
     try {
-      const r = await postTo(name, item, files, m);
+      const r = await postTo(name, item, files, m, aenv);
       entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), ...r };
       lines.push(`- **${name}**: posted${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
     } catch (e) {
@@ -239,7 +294,7 @@ async function run() {
     writeLog(log); // after each platform, so a crash never makes it post twice
   }
   for (const o of off) lines.push(`- left out: ${o}`);
-  if (targets.includes("tiktok") && (config.platforms.tiktok.method ?? "inbox") === "inbox" && entry.results.tiktok?.ok) {
+  if (targets.includes("tiktok") && (optsFor(acct, "tiktok").method ?? "inbox") === "inbox" && entry.results.tiktok?.ok) {
     lines.push("", "TikTok caption to paste:", "", "```text", item.tiktok.caption, "```");
   }
   writeLog(log);
@@ -251,13 +306,18 @@ async function run() {
 
 async function check() {
   let bad = 0;
-  for (const [name, mod] of Object.entries(PLATFORMS)) {
-    const opts = config.platforms?.[name] ?? {};
-    const missing = mod.SECRETS.filter((s) => !env[s]);
-    if (!opts.enabled) { console.log(`${name}: turned off in config.json`); continue; }
-    if (missing.length) { console.log(`${name}: not set up yet (missing secrets: ${missing.join(", ")})`); continue; }
-    try { console.log(`${name}: OK, ${await mod.check(env, opts)}`); }
-    catch (e) { bad++; console.log(`${name}: FAILED: ${e.message}`); }
+  for (const acct of Object.keys(accounts())) {
+    const aenv = envFor(acct);
+    const sfx = suffixOf(acct);
+    console.log(`Account ${acct}${sfx ? ` (secrets end in ${sfx})` : ""}:`);
+    for (const [name, mod] of Object.entries(PLATFORMS)) {
+      const opts = optsFor(acct, name);
+      const missing = mod.SECRETS.filter((s) => !aenv[s]).map((s) => (PER_ACCOUNT.includes(s) ? s + sfx : s));
+      if (!opts.enabled) { console.log(`  ${name}: turned off`); continue; }
+      if (missing.length) { console.log(`  ${name}: not set up yet (missing: ${missing.join(", ")})`); continue; }
+      try { console.log(`  ${name}: OK, ${await mod.check(aenv, opts)}`); }
+      catch (e) { bad++; console.log(`  ${name}: FAILED: ${e.message}`); }
+    }
   }
   return bad ? 1 : 0;
 }
@@ -267,38 +327,55 @@ function status() {
   const log = readLog();
   const mine = log.posts.filter((p) => p.mode === logMode(m));
   const done = new Set(mine.map((p) => p.id));
-  const left = (queue.items ?? []).filter((it) => !it.hold && !allPosted(it) && !done.has(it.id));
+  const lines = [`### Autopost status (mode ${m})`, ""];
+  for (const acct of Object.keys(accounts())) {
+    const items = (queue.items ?? []).filter((it) => accountOf(it) === acct);
+    const left = items.filter((it) => !it.hold && !allPosted(it) && !done.has(it.id));
+    lines.push(
+      `**Account ${acct}**: posted ${mine.filter((p) => entryAccount(p) === acct).length} by autopost, ${items.filter(allPosted).length} marked as posted by hand on every app. Left: ${left.length}. On hold: ${items.filter((i) => i.hold).length}.`,
+      `Next up: ${left.slice(0, 3).map((i) => i.id).join(", ") || "nothing"}`,
+      `Next times (${config.timezone}): ${upcomingSlots(new Date(), scheduleFor(acct), 5).join("; ")}`, "",
+    );
+  }
   summary([
-    `### Autopost status (mode ${m})`, "",
-    `Posted: ${mine.length} by autopost, ${(queue.items ?? []).filter(allPosted).length} marked as posted by hand on every app. Left in the queue: ${left.length}. On hold: ${(queue.items ?? []).filter((i) => i.hold).length}.`,
-    `Next up: ${left.slice(0, 3).map((i) => i.id).join(", ") || "nothing"}`,
-    `Next times (${config.timezone}): ${upcomingSlots(new Date(), config, 5).join("; ")}`,
-    ...mine.slice(-5).map((p) => `- ${p.id} (${p.slot}): ${Object.entries(p.results).map(([n, r]) => `${n} ${r.ok ? "ok" : "failed"}`).join(", ") || "nothing posted"}`),
+    ...lines,
+    ...mine.slice(-5).map((p) => `- ${p.id} (${entryAccount(p)}, ${p.slot}): ${Object.entries(p.results).map(([n, r]) => `${n} ${r.ok ? "ok" : "failed"}`).join(", ") || "nothing posted"}`),
   ].join("\n"));
   return 0;
 }
 
 // ---- one-time connect steps ----------------------------------------------------------------------
 
+// The connect steps work on one account: AUTOPOST_ACCOUNT (the "account" box), or the first account.
+const connectEnv = () => {
+  const acct = env.AUTOPOST_ACCOUNT?.trim() || firstAccount();
+  const e = envFor(acct);
+  for (const k of ["TIKTOK_CODE", "META_USER_TOKEN", "META_PAGE_NAME", "AUTOPOST_ADMIN_TOKEN", "GITHUB_REPOSITORY", "GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY"]) if (env[k]) e[k] = env[k];
+  return e;
+};
+
 function tiktokLink() {
+  const env = connectEnv();
   for (const k of ["TIKTOK_CLIENT_KEY", "TIKTOK_REDIRECT_URI"]) if (!env[k]) throw new Error(`${k} is not set (README, "TikTok")`);
   const scope = (config.platforms?.tiktok?.method ?? "inbox") === "direct" ? "user.info.basic,video.publish" : "user.info.basic,video.upload";
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
-  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: "autopost" }).toString();
-  summary(`### TikTok sign-in link\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok" and paste it. The code works for a few minutes only.`);
+  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: `autopost-${env.AUTOPOST_ACCOUNT_NAME}` }).toString();
+  summary(`### TikTok sign-in link for account ${env.AUTOPOST_ACCOUNT_NAME}\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok", the same account, and paste it. The code works for a few minutes only.`);
   return 0;
 }
 
 async function connectTiktok() {
+  const env = connectEnv();
   for (const k of ["TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "TIKTOK_CODE", "TIKTOK_REDIRECT_URI"]) if (!env[k]) throw new Error(`${k} is not set`);
   const code = decodeURIComponent(env.TIKTOK_CODE.trim());
   const body = await tiktok.exchangeCode(env, code, env.TIKTOK_REDIRECT_URI.trim());
   saveSecret(env, "TIKTOK_REFRESH_TOKEN", body.refresh_token);
-  console.log(`TikTok connected; TIKTOK_REFRESH_TOKEN saved (good for about ${Math.round((body.refresh_expires_in ?? 31536000) / 86400)} days, renewed as it is used).`);
+  console.log(`TikTok connected for account ${env.AUTOPOST_ACCOUNT_NAME}; TIKTOK_REFRESH_TOKEN${env.AUTOPOST_SECRET_SUFFIX} saved (good for about ${Math.round((body.refresh_expires_in ?? 31536000) / 86400)} days, renewed as it is used).`);
   return 0;
 }
 
 async function connectInstagram() {
+  const env = connectEnv();
   for (const k of ["META_APP_ID", "META_APP_SECRET", "META_USER_TOKEN"]) if (!env[k]) throw new Error(`${k} is not set`);
   const v = config.platforms?.instagram?.apiVersion ?? "v23.0";
   const g = `https://graph.facebook.com/${v}`;
@@ -320,7 +397,8 @@ async function connectInstagram() {
   }
   saveSecret(env, "INSTAGRAM_USER_ID", page.instagram_business_account.id);
   saveSecret(env, "INSTAGRAM_ACCESS_TOKEN", page.access_token);
-  console.log(`Instagram connected: @${page.instagram_business_account.username} through the Page "${page.name}". INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN saved.`);
+  const sfx = env.AUTOPOST_SECRET_SUFFIX;
+  console.log(`Instagram connected for account ${env.AUTOPOST_ACCOUNT_NAME}: @${page.instagram_business_account.username} through the Page "${page.name}". INSTAGRAM_USER_ID${sfx} and INSTAGRAM_ACCESS_TOKEN${sfx} saved.`);
   return 0;
 }
 

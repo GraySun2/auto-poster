@@ -1,8 +1,18 @@
 {
   "timezone": "America/Chicago",
   "slots": {
-    "default": ["11:00", "19:00"],
-    "fri": ["09:00", "14:00", "19:00"]
+    "default": [
+      "11:00",
+      "19:00"
+    ],
+    "fri": [
+      "09:00",
+      "14:00",
+      "19:00"
+    ]
+  },
+  "accounts": {
+    "main": {}
   },
   "catchUpHours": 3,
   "maxAttempts": 3,

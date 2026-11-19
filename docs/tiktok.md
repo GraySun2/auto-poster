@@ -31,10 +31,10 @@ In your repository: **Settings → Secrets and variables → Actions**.
 
 ## Part 3: sign in once
 
-1. **Actions → Autopost connect → Run workflow** → app `tiktok-link`, leave the box empty → **Run workflow**.
+1. **Actions → Autopost connect → Run workflow** → app `tiktok-link`, leave the box empty (fill in **account** for any account but your first) → **Run workflow**.
 2. Open the run → its summary shows a sign-in link. Open it, sign in to the TikTok account to post to, and **Authorize**.
 3. TikTok sends you to your redirect address. In the address bar, copy everything after `code=` up to the next `&`.
-4. Straight away (the code lasts a few minutes): **Actions → Autopost connect → Run workflow** → app `tiktok`, paste the code → **Run workflow**.
+4. Straight away (the code lasts a few minutes): **Actions → Autopost connect → Run workflow** → app `tiktok`, paste the code (and the same **account** as in step 1, if not your first) → **Run workflow**.
 5. The run should end with `TikTok connected; TIKTOK_REFRESH_TOKEN saved`.
 
 The token lasts about a year and is renewed whenever the job uses it (that's what the admin token is for). If you revoke the app in TikTok, repeat part 3.

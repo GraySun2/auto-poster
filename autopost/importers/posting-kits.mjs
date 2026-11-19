@@ -4,7 +4,9 @@
 // with its checks. Only videos whose Export check is ticked are added, oldest first (folder date, then episode number); videos
 // already in the queue are left alone, so it is safe to run again after new exports.
 //
-//   node autopost/importers/posting-kits.mjs <videos folder> [--queue autopost/queue.json] [--include-unticked] [--mark-posted]
+//   node autopost/importers/posting-kits.mjs <videos folder> [--queue autopost/queue.json] [--include-unticked] [--mark-posted] [--account NAME]
+//
+// --account NAME sends the videos it adds to that account in config.json (default: the first account).
 //
 // --mark-posted marks the videos it adds as already posted (by hand, before autopost), so only videos
 // exported after that get posted.
@@ -15,12 +17,14 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const args = process.argv.slice(2);
-const videosDir = args.find((a) => !a.startsWith("--"));
+const videosDir = args.find((a, i) => !a.startsWith("--") && !["--queue", "--account"].includes(args[i - 1]));
 if (!videosDir) { console.error("usage: posting-kits.mjs <videos folder> [--queue file] [--include-unticked]"); process.exit(2); }
 const qi = args.indexOf("--queue");
 const queuePath = resolve(qi >= 0 ? args[qi + 1] : "autopost/queue.json");
 const includeUnticked = args.includes("--include-unticked");
 const markPosted = args.includes("--mark-posted");
+const ai = args.indexOf("--account");
+const account = ai >= 0 ? args[ai + 1] : null;
 
 // The text inside the ```text box that follows **Label** in one ## section of posting.md.
 function box(md, section, label) {
@@ -53,7 +57,8 @@ for (const name of order) {
   if (!includeUnticked && !/^- \[x\] Export/m.test(notes)) { skipped.push(`${name} (Export not ticked)`); continue; }
   const md = readFileSync(kit, "utf8");
   const item = { id: name, video: `${name}/export/short.mp4` };
-  if (markPosted) item.posted = "by hand, before autopost";
+  if (account) item.account = account;
+  if (markPosted) item.posted = true;
   if (existsSync(join(dir, "export", "cover.png"))) item.cover = `${name}/export/cover.png`;
   const at = /cover from (\d+(?:\.\d+)?) ?s/.exec(notes);
   if (at) item.coverAtSeconds = Number(at[1]);

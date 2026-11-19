@@ -30,6 +30,7 @@ In the Instagram app: **Profile → ☰ → Settings → Account type and tools*
 6. In your repository: **Actions → Autopost connect → Run workflow**:
    - app: `instagram`
    - pasted: the token
+   - account: leave empty for your first account (or the account's name from `config.json`)
    - page_name: leave empty, unless you have more than one Page with an Instagram account (then the Page's exact name)
    - **Run workflow.**
 7. Open the run. It should end with `Instagram connected: @yourname through the Page "..."`. It has saved `INSTAGRAM_USER_ID` and `INSTAGRAM_ACCESS_TOKEN`.

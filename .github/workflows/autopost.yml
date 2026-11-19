@@ -18,6 +18,10 @@ on:
         type: choice
         options: [setting, dry-run, test, live]
         default: setting
+      account:
+        description: "post-now only: which account (empty = whichever is next in the queue)"
+        type: string
+        required: false
 
 permissions:
   contents: write   # only to save the posting log on the autopost-log branch
@@ -34,15 +38,12 @@ jobs:
       AUTOPOST_MODE: ${{ vars.AUTOPOST_MODE }}
       AUTOPOST_MODE_OVERRIDE: ${{ (inputs.mode && inputs.mode != 'setting') && inputs.mode || '' }}
       AUTOPOST_POST_NOW: ${{ inputs.action == 'post-now' }}
-      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-      INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
-      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
-      TIKTOK_CLIENT_KEY: ${{ vars.TIKTOK_CLIENT_KEY || secrets.TIKTOK_CLIENT_KEY }}
-      TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
-      TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+      # Every secret and variable goes to the job as JSON, so an account added in config.json needs no
+      # change here. GitHub still blanks each secret out of the logs.
+      AUTOPOST_SECRETS: ${{ toJSON(secrets) }}
+      AUTOPOST_VARS: ${{ toJSON(vars) }}
       AUTOPOST_ADMIN_TOKEN: ${{ secrets.AUTOPOST_ADMIN_TOKEN }}
+      AUTOPOST_ACCOUNT: ${{ inputs.account }}
     steps:
       # Only the autopost folder comes down at first; the one video being posted is added later,
       # so a repository full of videos stays quick to check out.

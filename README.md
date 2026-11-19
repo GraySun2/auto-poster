@@ -43,6 +43,7 @@ They go in **GitHub's encrypted Actions secrets**: your repository → **Setting
 | `INSTAGRAM_USER_ID`, `INSTAGRAM_ACCESS_TOKEN` | Your Instagram account and its token | Saved for you by the connect step, [docs/instagram.md](docs/instagram.md) |
 | `TIKTOK_CLIENT_SECRET` | Your TikTok developer app | [docs/tiktok.md](docs/tiktok.md) |
 | `TIKTOK_REFRESH_TOKEN` | Lets the job send videos to your TikTok | Saved for you by the connect step, [docs/tiktok.md](docs/tiktok.md) |
+| *(more accounts)* | The same names ending in `_` and the account's name, e.g. `YOUTUBE_REFRESH_TOKEN_SECOND` | "Several accounts on the same app" below |
 | `AUTOPOST_ADMIN_TOKEN` | Lets the connect step save the secrets above, and keeps the TikTok token fresh | "The admin token" below |
 
 Two values are not secret and go under the **Variables** tab instead: `TIKTOK_CLIENT_KEY` and `TIKTOK_REDIRECT_URI` (they appear in TikTok's sign-in link anyway).
@@ -105,11 +106,32 @@ Each run's summary page lists what it posted, with links. For TikTok in inbox mo
 
 Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` and `video` are required. `hold: true` keeps a video back for now; `posted` marks a video you already posted yourself: `true` for every app, or a list such as `["instagram"]` for just those apps. Leave out an app's block, or list `platforms`, to skip an app for that video. `coverAtSeconds` picks the cover frame on Instagram and TikTok (neither takes an uploaded image through this route); YouTube uses `cover` only if `setThumbnail` is on. Videos post in the order they appear; to change the order, move them. `node autopost/autopost.mjs validate` checks the file.
 
+## Several accounts on the same app
+
+One copy can post to several channels: for example a main channel and a second one, each with its own YouTube, Instagram and TikTok. List them in `config.json`:
+
+```json
+"accounts": {
+  "main": {},
+  "second": {
+    "slots": { "default": ["12:00", "20:00"] },
+    "platforms": { "instagram": { "enabled": false } }
+  }
+}
+```
+
+- **Which video goes where:** add `"account": "second"` to a queue item. Items without it go to the first account.
+- **Times:** each account has its own `slots` (or shares the top-level ones) and its own place in the queue, so one channel never holds up another. A run posts at most one video.
+- **Settings:** an account's `platforms` block changes only what it lists; everything else comes from the top-level `platforms`.
+- **Secrets:** the first account uses the plain names (`YOUTUBE_REFRESH_TOKEN`). Every other account adds its name in capitals: `YOUTUBE_REFRESH_TOKEN_SECOND`, `INSTAGRAM_USER_ID_SECOND`, `INSTAGRAM_ACCESS_TOKEN_SECOND`, `TIKTOK_REFRESH_TOKEN_SECOND`. The app keys (`YOUTUBE_CLIENT_ID`, `META_APP_ID`, `TIKTOK_CLIENT_KEY` and their secrets) can be shared by every account, or given an account's own with the same ending. An account's own sign-in never falls back to the first account's, so a video can't land on the wrong channel.
+- **Signing in:** YouTube: run the OAuth Playground again, signed in as the second channel, and save its refresh token as `YOUTUBE_REFRESH_TOKEN_SECOND`. Instagram and TikTok: run **Autopost connect** with **account** set to `second`; it saves the tokens under the right names.
+- **Check:** action `check` lists every account and the channel each one signs in to.
+
 ## Using it in a repository that already has your videos
 
 Copy the `autopost/` folder and the two files in `.github/workflows/` into that repository, and set `mediaRoot` in `config.json` to the folder that holds the videos (for example `videos`). The job checks out only the one video it is posting, so a repository with gigabytes of video stays quick.
 
-`autopost/importers/posting-kits.mjs` fills the queue from folders made with the animated-short skill (each with `export/short.mp4`, `export/cover.png` and `export/posting.md`), oldest first, and only those whose Export check is ticked. It skips videos already in the queue, so you can run it again after each new batch. Add `--mark-posted` the first time if those videos are already up, so only the ones exported later get posted.
+`autopost/importers/posting-kits.mjs` fills the queue from folders made with the animated-short skill (each with `export/short.mp4`, `export/cover.png` and `export/posting.md`), oldest first, and only those whose Export check is ticked. It skips videos already in the queue, so you can run it again after each new batch. Add `--mark-posted` the first time if those videos are already up, so only the ones exported later get posted, and `--account NAME` to send them to another account.
 
 ## Limits worth knowing
 
@@ -124,7 +146,7 @@ Copy the `autopost/` folder and the two files in `.github/workflows/` into that 
 ```
 autopost/
   autopost.mjs          the job: plan, run, check, status, validate, connect steps
-  config.json           time zone, posting times, per-app settings
+  config.json           time zone, posting times, accounts, per-app settings
   queue.json            the videos, in posting order
   lib/                  one file per app, plus the schedule and helpers
   importers/            fill the queue from other formats

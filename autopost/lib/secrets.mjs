@@ -8,7 +8,9 @@ export function canSaveSecrets(env) {
   return Boolean(env.AUTOPOST_ADMIN_TOKEN && env.GITHUB_REPOSITORY);
 }
 
-export function saveSecret(env, name, value) {
+// An account other than the first saves under its own name: TIKTOK_REFRESH_TOKEN_SECOND.
+export function saveSecret(env, baseName, value) {
+  const name = baseName + (env.AUTOPOST_SECRET_SUFFIX ?? "");
   if (!canSaveSecrets(env)) throw new Error(`cannot save ${name}: add the AUTOPOST_ADMIN_TOKEN secret (see README, "The admin token")`);
   if (env.GITHUB_ACTIONS) console.log(`::add-mask::${value}`);
   const r = spawnSync("gh", ["secret", "set", name, "--repo", env.GITHUB_REPOSITORY], {
