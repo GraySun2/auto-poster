@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "example-01",
+      "video": "example-01/video.mp4",
+      "cover": "example-01/cover.png",
+      "coverAtSeconds": 2.5,
+      "hold": true,
+      "youtube": {
+        "title": "Your title here #Shorts",
+        "description": "One or two lines about the video.\n\n#Shorts #yourtag"
+      },
+      "instagram": {
+        "caption": "Your caption here.\n\n#yourtag #another"
+      },
+      "tiktok": {
+        "caption": "Your caption here. #yourtag #another"
+      }
+    }
+  ]
+}

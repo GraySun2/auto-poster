@@ -1,0 +1,9 @@
+# Keys and logins never go in the repository (README, "Where your keys and logins go")
+.env
+.env.*
+*.key
+client_secret*.json
+# Made by each run
+.autopost-state/
+.autopost-plan.json
+node_modules/

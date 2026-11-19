@@ -1,0 +1,45 @@
+{
+  "timezone": "America/Chicago",
+  "slots": {
+    "default": [
+      "11:00",
+      "19:00"
+    ],
+    "fri": [
+      "09:00",
+      "14:00",
+      "19:00"
+    ]
+  },
+  "accounts": {
+    "main": {}
+  },
+  "catchUpHours": 3,
+  "maxAttempts": 3,
+  "mediaRoot": "media",
+  "platforms": {
+    "youtube": {
+      "enabled": true,
+      "privacy": "public",
+      "categoryId": "20",
+      "madeForKids": false,
+      "containsSyntheticMedia": false,
+      "setThumbnail": false
+    },
+    "instagram": {
+      "enabled": true,
+      "shareToFeed": true,
+      "isAiGenerated": false,
+      "apiVersion": "v23.0"
+    },
+    "tiktok": {
+      "enabled": true,
+      "method": "inbox",
+      "privacy": "PUBLIC_TO_EVERYONE",
+      "isAigc": false,
+      "disableComment": false,
+      "disableDuet": false,
+      "disableStitch": false
+    }
+  }
+}
