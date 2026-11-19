@@ -1,0 +1,55 @@
+# One-time sign-in for TikTok or Instagram. It turns what you paste into the box into long-lived
+# tokens and saves them as repository secrets, so you never copy a token by hand.
+# Needs the AUTOPOST_ADMIN_TOKEN secret (README, "The admin token").
+# What you paste is short-lived and single-use, but it is visible to anyone who can see this
+# repository's Actions runs, so keep the repository private or run this right before the code expires.
+name: Autopost connect
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Which app"
+        type: choice
+        options: [tiktok-link, tiktok, instagram]
+      pasted:
+        description: "tiktok-link: leave empty. tiktok: the code= part of the address. Instagram: the token from the Graph API Explorer"
+        type: string
+        required: false
+      page_name:
+        description: "Instagram only, if you have several Pages: the Page's name"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hide the pasted value in the log
+        if: inputs.pasted != ''
+        env:
+          PASTED: ${{ inputs.pasted }}
+        run: echo "::add-mask::$PASTED"
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: autopost
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Connect
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AUTOPOST_ADMIN_TOKEN: ${{ secrets.AUTOPOST_ADMIN_TOKEN }}
+          TIKTOK_CLIENT_KEY: ${{ vars.TIKTOK_CLIENT_KEY || secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_REDIRECT_URI: ${{ vars.TIKTOK_REDIRECT_URI }}
+          TIKTOK_CODE: ${{ inputs.app == 'tiktok' && inputs.pasted || '' }}
+          META_APP_ID: ${{ secrets.META_APP_ID }}
+          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
+          META_USER_TOKEN: ${{ inputs.app == 'instagram' && inputs.pasted || '' }}
+          META_PAGE_NAME: ${{ inputs.page_name }}
+        run: node autopost/autopost.mjs connect-${{ inputs.app }}

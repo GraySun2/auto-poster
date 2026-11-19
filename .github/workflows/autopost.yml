@@ -1,0 +1,102 @@
+# Posts the next video in autopost/queue.json when one of the times in autopost/config.json comes round.
+# Runs every hour; most runs find nothing due and finish in seconds. See README.md.
+# Pause: set the repository variable AUTOPOST_MODE to "off" (or turn this workflow off in the Actions tab).
+name: Autopost
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do"
+        type: choice
+        options: [post-if-due, post-now, check, status]
+        default: post-if-due
+      mode:
+        description: "Mode for this run (setting = use the AUTOPOST_MODE variable)"
+        type: choice
+        options: [setting, dry-run, test, live]
+        default: setting
+
+permissions:
+  contents: write   # only to save the posting log on the autopost-log branch
+
+concurrency:
+  group: autopost
+  cancel-in-progress: false
+
+jobs:
+  autopost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AUTOPOST_MODE: ${{ vars.AUTOPOST_MODE }}
+      AUTOPOST_MODE_OVERRIDE: ${{ (inputs.mode && inputs.mode != 'setting') && inputs.mode || '' }}
+      AUTOPOST_POST_NOW: ${{ inputs.action == 'post-now' }}
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+      INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      TIKTOK_CLIENT_KEY: ${{ vars.TIKTOK_CLIENT_KEY || secrets.TIKTOK_CLIENT_KEY }}
+      TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+      TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+      AUTOPOST_ADMIN_TOKEN: ${{ secrets.AUTOPOST_ADMIN_TOKEN }}
+    steps:
+      # Only the autopost folder comes down at first; the one video being posted is added later,
+      # so a repository full of videos stays quick to check out.
+      - uses: actions/checkout@v4
+        with:
+          filter: blob:none
+          sparse-checkout: |
+            autopost
+            .github
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Read the posting log
+        run: |
+          mkdir -p .autopost-state
+          if git fetch -q origin autopost-log 2>/dev/null; then
+            git show FETCH_HEAD:log.json > .autopost-state/log.json
+            git rev-parse FETCH_HEAD > .autopost-state/parent
+          fi
+
+      - name: Check sign-ins
+        if: inputs.action == 'check'
+        run: node autopost/autopost.mjs check
+
+      - name: Status
+        if: inputs.action == 'status'
+        run: node autopost/autopost.mjs status
+
+      - name: Decide
+        id: plan
+        if: inputs.action != 'check' && inputs.action != 'status'
+        run: node autopost/autopost.mjs plan
+
+      - name: Get the video
+        if: steps.plan.outputs.job == 'post' || steps.plan.outputs.job == 'retry'
+        env:
+          DIRS: ${{ steps.plan.outputs.dirs }}
+        run: echo "$DIRS" | xargs -d '\n' git sparse-checkout add
+
+      - name: Post
+        if: steps.plan.outputs.job == 'post' || steps.plan.outputs.job == 'retry'
+        run: node autopost/autopost.mjs run
+
+      - name: Save the posting log
+        if: always() && hashFiles('.autopost-state/log.json') != ''
+        run: |
+          cd .autopost-state
+          git config user.name "autopost"
+          git config user.email "autopost@users.noreply.github.com"
+          blob=$(git hash-object -w log.json)
+          tree=$(printf '100644 blob %s\tlog.json\n' "$blob" | git mktree)
+          parent=$(cat parent 2>/dev/null || true)
+          if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then echo "log unchanged"; exit 0; fi
+          commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} -m "Posting log: $(date -u +%FT%TZ)")
+          git push -q origin "$commit:refs/heads/autopost-log"
