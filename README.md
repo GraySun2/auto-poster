@@ -95,7 +95,7 @@ Each run's summary page lists what it posted, with links. For TikTok in inbox mo
   "cover": "unique-name/cover.png",
   "coverAtSeconds": 2.5,
   "hold": false,
-  "posted": "",
+  "posted": ["instagram"],
   "platforms": ["youtube", "tiktok"],
   "youtube": { "title": "Up to 100 characters", "description": "...", "tags": ["optional"] },
   "instagram": { "caption": "Up to 2200 characters, 30 hashtags" },
@@ -103,7 +103,7 @@ Each run's summary page lists what it posted, with links. For TikTok in inbox mo
 }
 ```
 
-Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` and `video` are required. `hold: true` keeps a video back for now; `posted` (any text, such as `"by hand"`) marks one you already posted yourself, so it is skipped for good. Leave out an app's block, or list `platforms`, to skip an app for that video. `coverAtSeconds` picks the cover frame on Instagram and TikTok (neither takes an uploaded image through this route); YouTube uses `cover` only if `setThumbnail` is on. Videos post in the order they appear; to change the order, move them. `node autopost/autopost.mjs validate` checks the file.
+Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` and `video` are required. `hold: true` keeps a video back for now; `posted` marks a video you already posted yourself: `true` for every app, or a list such as `["instagram"]` for just those apps. Leave out an app's block, or list `platforms`, to skip an app for that video. `coverAtSeconds` picks the cover frame on Instagram and TikTok (neither takes an uploaded image through this route); YouTube uses `cover` only if `setThumbnail` is on. Videos post in the order they appear; to change the order, move them. `node autopost/autopost.mjs validate` checks the file.
 
 ## Using it in a repository that already has your videos
 

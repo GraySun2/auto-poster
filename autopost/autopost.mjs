@@ -67,6 +67,10 @@ function output(name, value) {
 
 const mediaPath = (rel) => (rel ? resolve(ROOT, config.mediaRoot ?? "media", rel) : null);
 
+// `posted` marks what was posted by hand before autopost: true or any text = every app, a list = those apps.
+const postedBy = (item, name) => Array.isArray(item.posted) ? item.posted.includes(name) : Boolean(item.posted);
+const allPosted = (item) => Object.keys(PLATFORMS).filter((n) => config.platforms?.[n]?.enabled).every((n) => postedBy(item, n));
+
 // Which platforms an item goes to, and why any are left out.
 function platformsFor(item, m) {
   const on = [], off = [];
@@ -74,6 +78,7 @@ function platformsFor(item, m) {
     const opts = config.platforms?.[name] ?? {};
     if (!opts.enabled) { off.push(`${name}: turned off in config.json`); continue; }
     if (item.platforms && !item.platforms.includes(name)) { off.push(`${name}: not in this item's platforms`); continue; }
+    if (postedBy(item, name)) { off.push(`${name}: already posted by hand`); continue; }
     if (!item[name]) { off.push(`${name}: no ${name} words in queue.json`); continue; }
     const missing = mod.SECRETS.filter((s) => !env[s]);
     if (missing.length) {
@@ -127,7 +132,7 @@ function validate({ files = true } = {}) {
 
 function nextItem(log, m) {
   const done = new Set(log.posts.filter((p) => p.mode === logMode(m)).map((p) => p.id));
-  return (queue.items ?? []).find((it) => !it.hold && !it.posted && !done.has(it.id)) ?? null;
+  return (queue.items ?? []).find((it) => !it.hold && !allPosted(it) && !done.has(it.id)) ?? null;
 }
 
 function makePlan() {
@@ -262,10 +267,10 @@ function status() {
   const log = readLog();
   const mine = log.posts.filter((p) => p.mode === logMode(m));
   const done = new Set(mine.map((p) => p.id));
-  const left = (queue.items ?? []).filter((it) => !it.hold && !it.posted && !done.has(it.id));
+  const left = (queue.items ?? []).filter((it) => !it.hold && !allPosted(it) && !done.has(it.id));
   summary([
     `### Autopost status (mode ${m})`, "",
-    `Posted: ${mine.length} by autopost, ${(queue.items ?? []).filter((i) => i.posted).length} marked as posted by hand. Left in the queue: ${left.length}. On hold: ${(queue.items ?? []).filter((i) => i.hold).length}.`,
+    `Posted: ${mine.length} by autopost, ${(queue.items ?? []).filter(allPosted).length} marked as posted by hand on every app. Left in the queue: ${left.length}. On hold: ${(queue.items ?? []).filter((i) => i.hold).length}.`,
     `Next up: ${left.slice(0, 3).map((i) => i.id).join(", ") || "nothing"}`,
     `Next times (${config.timezone}): ${upcomingSlots(new Date(), config, 5).join("; ")}`,
     ...mine.slice(-5).map((p) => `- ${p.id} (${p.slot}): ${Object.entries(p.results).map(([n, r]) => `${n} ${r.ok ? "ok" : "failed"}`).join(", ") || "nothing posted"}`),
