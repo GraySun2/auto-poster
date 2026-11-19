@@ -19,14 +19,20 @@ async function accessToken(env) {
   return body.access_token;
 }
 
-// Checks the sign-in works and names the channel it posts to. Costs 1 quota unit.
+// Checks the sign-in works, and names the channel when the sign-in also allows reading (youtube.upload
+// alone does not; then the first test upload shows which channel it went to). Costs 1 quota unit.
 export async function check(env) {
   const token = await accessToken(env);
-  const { body } = await request("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
-    headers: { Authorization: `Bearer ${token}` },
-  }, "YouTube channel lookup");
-  const ch = body.items?.[0];
-  return ch ? `channel "${ch.snippet.title}"` : "signed in, but this Google account has no YouTube channel";
+  try {
+    const { body } = await request("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      headers: { Authorization: `Bearer ${token}` },
+    }, "YouTube channel lookup");
+    const ch = body.items?.[0];
+    return ch ? `channel "${ch.snippet.title}"` : "signed in, but this Google account has no YouTube channel";
+  } catch (e) {
+    if (/insufficient|SCOPE/i.test(e.message)) return "signed in with upload permission (the channel name isn't shown: that needs read access, which this sign-in doesn't ask for; a test-mode upload shows the channel)";
+    throw e;
+  }
 }
 
 // item.youtube = { title, description, tags? }, opts = config.platforms.youtube, privacy = "public" | "private" | "unlisted"

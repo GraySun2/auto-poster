@@ -47,14 +47,14 @@ jobs:
     steps:
       # Only the autopost folder comes down at first; the one video being posted is added later,
       # so a repository full of videos stays quick to check out.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           filter: blob:none
           sparse-checkout: |
             autopost
             .github
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
