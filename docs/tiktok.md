@@ -13,7 +13,7 @@ TikTok offers two ways for an app to post:
 
 1. Go to **developers.tiktok.com**, **Log in** with your TikTok account, and register as a developer if asked.
 2. **Manage apps → Connect an app** (or **Create app**). Choose an individual developer if asked.
-3. **Basic information:** an icon, name `autopost`, a category, a short description. For review TikTok also wants a website, a **Terms of Service** URL and a **Privacy Policy** URL; a page in this repository published with GitHub Pages works.
+3. **Basic information:** an icon, name `autopost`, a category, a short description. For review TikTok also wants a website, a **Terms of Service** URL and a **Privacy Policy** URL; `docs/terms.md` and `docs/privacy.md` in this repository work if the repository is public.
 4. **Add products:** **Login Kit** and **Content Posting API**.
 5. **Scopes:** `user.info.basic` and `video.upload` (add `video.publish` only for direct posting).
 6. **Login Kit → Redirect URI → Web:** an https address you control, with no `?` in it. The repository's own address is fine, for example `https://github.com/your-name/your-repo`. TikTok sends you back there after you sign in, with a code in the address bar.

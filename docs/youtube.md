@@ -11,6 +11,7 @@ Google renames these menus now and then; if a name below doesn't match, look for
 3. Search bar: **YouTube Data API v3** → **Enable**.
 4. Left menu: **Google Auth Platform** (or **APIs & Services → OAuth consent screen**) → **Get started**.
    - App name `autopost`, your email as the support email, **Audience: External**, your email as the contact. **Create**.
+   - **Branding:** publishing needs an app home page and a privacy policy link. If this repository is public, use its address and `docs/privacy.md` here (for example `https://github.com/you/auto-poster` and `https://github.com/you/auto-poster/blob/main/docs/privacy.md`); otherwise any public page of yours with the same words. Don't upload a logo: a logo makes Google want to review the app.
 5. **Data access** → **Add or remove scopes** → find **`.../auth/youtube.upload`** (Manage your YouTube videos... upload) → tick it → **Update** → **Save**.
 6. **Audience** → **Publish app** → **Confirm**. This matters: while an app is in "Testing", Google cuts its sign-in off after 7 days. Published but not verified is fine for your own channel; Google just shows a warning when you sign in, below.
 7. **Clients** → **Create client**:
