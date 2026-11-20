@@ -36,7 +36,9 @@ export async function check(env) {
 }
 
 // item.youtube = { title, description, tags? }, opts = config.platforms.youtube, privacy = "public" | "private" | "unlisted"
-export async function post(item, files, opts, env, privacy) {
+// publishAt (ISO time, optional): upload as private now and let YouTube make it public at that moment.
+export async function post(item, files, opts, env, privacy, publishAt) {
+  if (publishAt) privacy = "private";
   const token = await accessToken(env);
   const size = statSync(files.video).size;
   const meta = {
@@ -48,6 +50,7 @@ export async function post(item, files, opts, env, privacy) {
     },
     status: {
       privacyStatus: privacy,
+      ...(publishAt ? { publishAt } : {}),
       selfDeclaredMadeForKids: Boolean(opts.madeForKids),
       containsSyntheticMedia: Boolean(opts.containsSyntheticMedia),
     },
@@ -74,6 +77,7 @@ export async function post(item, files, opts, env, privacy) {
   }, "YouTube upload");
 
   const result = { id: video.id, url: `https://youtube.com/shorts/${video.id}`, privacy: video.status?.privacyStatus };
+  if (publishAt) result.publishAt = video.status?.publishAt ?? publishAt;
   if (privacy !== video.status?.privacyStatus) {
     result.note = `asked for ${privacy}, YouTube set ${video.status?.privacyStatus}`;
   }

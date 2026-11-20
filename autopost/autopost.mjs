@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync, existsSync, statSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dueSlot, upcomingSlots, validateSlots, localParts } from "./lib/schedule.mjs";
+import { dueSlot, upcomingSlots, validateSlots, localParts, aheadSlots, slotTime } from "./lib/schedule.mjs";
 import * as youtube from "./lib/youtube.mjs";
 import * as instagram from "./lib/instagram.mjs";
 import * as tiktok from "./lib/tiktok.mjs";
@@ -186,8 +186,18 @@ function validate({ files = true } = {}) {
 
 // ---- plan ----------------------------------------------------------------------------------------
 
-function nextItem(log, m, acct) {
-  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && owed(it, m, log).on.length) ?? null;
+function nextItem(log, m, acct, skip = new Set()) {
+  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !skip.has(it.id) && owed(it, m, log).on.length) ?? null;
+}
+
+// Uploading ahead: YouTube can hold a private upload and make it public at a set time, so posts land on
+// the minute even when GitHub starts the job late or skips it. Only when YouTube is the account's one app,
+// since the others can't be scheduled this way. Returns how many hours ahead to fill (0 = off).
+const MAX_PER_RUN = 4; // YouTube's free quota is about six uploads a day
+function aheadHours(acct, m) {
+  if (m !== "live" && m !== "dry-run") return 0;
+  const on = Object.keys(PLATFORMS).filter((n) => optsFor(acct, n).enabled);
+  return on.length === 1 && on[0] === "youtube" ? Number(optsFor(acct, "youtube").scheduleAheadHours ?? 0) : 0;
 }
 // Every slot an account has used, counting each app's post (an app can catch up in a later slot).
 const usedSlots = (log, m, acct) => new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct)
@@ -213,36 +223,54 @@ function makePlan() {
       if (!item) plan.why = `nothing left to post${only ? ` for account ${only}` : ""}: add videos to queue.json`;
       else plan = { ...plan, job: "post", id: item.id, account: accountOf(item), slot: `manual ${now.toISOString()}`, why: "posting now (run by hand)" };
     } else {
-      // Each account keeps its own times and its own place in the queue; one post per run.
+      // Each account keeps its own times and its own place in the queue. A run posts what is due, plus,
+      // when uploading ahead, the coming slots' videos (all for one account per run).
       const waiting = [];
       for (const acct of Object.keys(accounts())) {
+        const sched = scheduleFor(acct);
         const used = usedSlots(log, m, acct);
-        const slot = dueSlot(now, scheduleFor(acct), used);
-        if (!slot) { waiting.push(`${acct} next ${upcomingSlots(now, scheduleFor(acct), 1)[0] ?? "none set"}`); continue; }
-        const item = nextItem(log, m, acct);
-        if (!item) { waiting.push(`${acct}: slot ${slot} is due but its queue is empty`); continue; }
-        plan = { ...plan, job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` };
+        const chosen = new Set();
+        const jobs = [];
+        const slot = dueSlot(now, sched, used);
+        if (slot) {
+          const item = nextItem(log, m, acct);
+          if (item) { jobs.push({ job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` }); chosen.add(item.id); }
+          else waiting.push(`${acct}: slot ${slot} is due but its queue is empty`);
+        }
+        const hours = aheadHours(acct, m);
+        if (hours) {
+          for (const s of aheadSlots(now, sched, used, hours)) {
+            if (jobs.length >= MAX_PER_RUN) break;
+            const item = nextItem(log, m, acct, chosen);
+            if (!item) break;
+            jobs.push({ job: "post", id: item.id, account: acct, slot: s, publishAt: slotTime(s, sched.timezone).toISOString(), why: `uploaded ahead, goes public at ${s}` });
+            chosen.add(item.id);
+          }
+        }
+        if (!jobs.length) { if (!slot) waiting.push(`${acct} next ${upcomingSlots(now, sched, 1)[0] ?? "none set"}`); continue; }
+        plan = { ...plan, ...jobs[0], more: jobs.slice(1) };
         break;
       }
       if (plan.job === "none") plan.why = `no slot due (${localParts(now, config.timezone).ymd}, ${config.timezone}); ${waiting.join("; ")}`;
     }
   }
   if (plan.id) {
-    const item = queue.items.find((it) => it.id === plan.id);
-    plan.dirs = [...new Set([item.video, item.cover].filter(Boolean).map((r) => dirname(join(config.mediaRoot ?? "media", r))))];
+    const items = [plan.id, ...(plan.more ?? []).map((j) => j.id)].map((id) => queue.items.find((it) => it.id === id));
+    plan.dirs = [...new Set(items.flatMap((item) => [item.video, item.cover]).filter(Boolean).map((r) => dirname(join(config.mediaRoot ?? "media", r))))];
   }
   writeFileSync(PLAN_PATH, JSON.stringify(plan, null, 2));
   output("job", plan.job);
   output("dirs", (plan.dirs ?? []).join("\n"));
   console.log(`Mode ${m}: ${plan.job === "none" ? "nothing to do" : plan.job + " " + plan.id}. ${plan.why}`);
+  for (const j of plan.more ?? []) console.log(`  and ${j.id}: ${j.why}`);
   return plan;
 }
 
 // ---- run -----------------------------------------------------------------------------------------
 
-async function postTo(name, item, files, m, aenv) {
+async function postTo(name, item, files, m, aenv, publishAt) {
   const opts = optsFor(accountOf(item), name);
-  if (name === "youtube") return youtube.post(item, files, opts, aenv, m === "test" ? "private" : (opts.privacy ?? "public"));
+  if (name === "youtube") return youtube.post(item, files, opts, aenv, m === "test" ? "private" : (opts.privacy ?? "public"), publishAt);
   if (name === "instagram") return instagram.post(item, files, opts, aenv);
   if (name === "tiktok") {
     const privacy = m === "test" ? "SELF_ONLY" : (opts.privacy ?? "PUBLIC_TO_EVERYONE");
@@ -254,6 +282,12 @@ async function run() {
   const plan = existsSync(PLAN_PATH) ? readJson(PLAN_PATH) : makePlan();
   rmSync(PLAN_PATH, { force: true }); // a plan is used once
   if (plan.job === "none") return 0;
+  let failed = 0;
+  for (const job of [plan, ...(plan.more ?? [])]) failed += await runOne({ ...job, mode: plan.mode });
+  return failed ? 1 : 0;
+}
+
+async function runOne(plan) {
   const m = plan.mode;
   const item = queue.items.find((it) => it.id === plan.id);
   const files = { video: mediaPath(item.video), cover: mediaPath(item.cover) };
@@ -273,7 +307,7 @@ async function run() {
     summary([
       `### Autopost dry run: would post \`${item.id}\` to account ${acct} (${plan.why})`, "",
       `Video: ${config.mediaRoot ?? "media"}/${item.video} (${size} MB)`,
-      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${optsFor(acct, "youtube").privacy ?? "public"}` : n === "tiktok" ? `via ${optsFor(acct, "tiktok").method ?? "inbox"}` : "reel"}`),
+      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${plan.publishAt ? `private until ${plan.publishAt}, then public` : (optsFor(acct, "youtube").privacy ?? "public")}` : n === "tiktok" ? `via ${optsFor(acct, "tiktok").method ?? "inbox"}` : "reel"}`),
       ...off.map((o) => `- left out: ${o}`),
       "", "Nothing was posted. Set the repository variable AUTOPOST_MODE to `test` or `live` to post.",
     ].join("\n"));
@@ -285,8 +319,10 @@ async function run() {
     summary([`### Autopost (${m}): nothing posted, no app is ready`, "", ...off.map((o) => `- ${o}`), "", `${item.id} stays next in the queue.`].join("\n"));
     return 1;
   }
+  // A retried upload keeps its publish time while that is still ahead; otherwise it goes up straight away.
+  if (plan.job === "retry" && entry?.publishAt && Date.parse(entry.publishAt) > Date.now() + 10 * 60000) plan.publishAt = entry.publishAt;
   if (!entry) {
-    entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off };
+    entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off, ...(plan.publishAt ? { publishAt: plan.publishAt } : {}) };
     log.posts.push(entry);
   }
 
@@ -295,9 +331,9 @@ async function run() {
   for (const name of targets) {
     const prev = entry.results[name] ?? { attempts: 0 };
     try {
-      const r = await postTo(name, item, files, m, aenv);
+      const r = await postTo(name, item, files, m, aenv, name === "youtube" ? plan.publishAt : undefined);
       entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, ...r };
-      lines.push(`- **${name}**: posted${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
+      lines.push(`- **${name}**: ${r.publishAt ? `uploaded, goes public ${r.publishAt}` : "posted"}${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
     } catch (e) {
       failed++;
       entry.results[name] = { ok: false, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, error: e.message.slice(0, 1000) };
