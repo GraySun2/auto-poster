@@ -87,7 +87,10 @@ jobs:
 
       - name: Post
         if: steps.plan.outputs.job == 'post' || steps.plan.outputs.job == 'retry'
-        run: node autopost/autopost.mjs run
+        run: |
+          # ffmpeg lays a queue item's overlay over its video; GitHub's Ubuntu runners usually have it.
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          node autopost/autopost.mjs run
 
       - name: Save the posting log
         if: always() && hashFiles('.autopost-state/log.json') != ''

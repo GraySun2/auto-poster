@@ -21,6 +21,8 @@
 import { readFileSync, writeFileSync, existsSync, statSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dueSlot, upcomingSlots, validateSlots, localParts, aheadSlots, slotTime } from "./lib/schedule.mjs";
 import * as youtube from "./lib/youtube.mjs";
 import * as instagram from "./lib/instagram.mjs";
@@ -177,6 +179,7 @@ function validate({ files = true } = {}) {
         const p = mediaPath(it[k]);
         if (p && !existsSync(p)) problems.push(`${at}: ${k} file not found: ${config.mediaRoot ?? "media"}/${it[k]}`);
       }
+      if (it.overlay && !existsSync(join(HERE, it.overlay))) problems.push(`${at}: overlay file not found: autopost/${it.overlay}`);
       const v = mediaPath(it.video);
       if (v && existsSync(v) && statSync(v).size > 1024 ** 3) problems.push(`${at}: video is over 1 GB`);
     }
@@ -321,6 +324,14 @@ async function runOne(plan) {
   }
   // A retried upload keeps its publish time while that is still ahead; otherwise it goes up straight away.
   if (plan.job === "retry" && entry?.publishAt && Date.parse(entry.publishAt) > Date.now() + 10 * 60000) plan.publishAt = entry.publishAt;
+  // An item's "overlay" (a 1080x1920 PNG in autopost/, transparent except what it adds, such as the hook
+  // on screen) is laid over the video as it goes up; the video file in the repository stays as it is.
+  if (item.overlay) {
+    const out = join(tmpdir(), `autopost-${item.id}.mp4`);
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", files.video, "-i", join(HERE, item.overlay),
+      "-filter_complex", "[0][1]overlay", "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy", out]);
+    files.video = out;
+  }
   if (!entry) {
     entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off, ...(plan.publishAt ? { publishAt: plan.publishAt } : {}) };
     log.posts.push(entry);
