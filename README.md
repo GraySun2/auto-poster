@@ -111,6 +111,10 @@ Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` 
 
 The first line people see decides whether they stop scrolling. On a Short that is the title; on Instagram and TikTok it is the caption's first line. Put the video's opening line (its hook) first in the YouTube title and description and in each caption, with hashtags after, and set `onScreenText` to the same line so it is on screen too. All of this goes on as the video uploads, so the video files need no new export.
 
+### Making the videos' art
+
+This template ships no assets. [docs/asset-library.md](docs/asset-library.md) tells your coding agent how to build and curate its own library in code (sprites, styles, characters, on-screen text, sounds), with a one-minute summary for people at the top.
+
 ## Several accounts on the same app
 
 One copy can post to several channels: for example a main channel and a second one, each with its own YouTube, Instagram and TikTok. List them in `config.json`:
