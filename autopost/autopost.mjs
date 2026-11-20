@@ -21,7 +21,9 @@
 import { readFileSync, writeFileSync, existsSync, statSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dueSlot, upcomingSlots, validateSlots, localParts } from "./lib/schedule.mjs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { dueSlot, upcomingSlots, validateSlots, localParts, aheadSlots, slotTime } from "./lib/schedule.mjs";
 import * as youtube from "./lib/youtube.mjs";
 import * as instagram from "./lib/instagram.mjs";
 import * as tiktok from "./lib/tiktok.mjs";
@@ -130,6 +132,18 @@ function platformsFor(item, m, aenv) {
   return { on, off };
 }
 
+// Each app keeps its own place in the queue: an item is finished on an app once the log has a post
+// there (or it gave up after maxAttempts), so an app set up later still gets the videos the others
+// already posted.
+const entryFor = (log, m, id) => log.posts.find((p) => p.id === id && p.mode === logMode(m));
+const doneOn = (entry, name) => { const r = entry?.results?.[name]; return Boolean(r && (r.ok || r.attempts >= MAX_ATTEMPTS)); };
+function owed(item, m, log) {
+  const entry = entryFor(log, m, item.id);
+  // A dry run previews apps whose secrets are missing, but only for videos nothing has posted yet.
+  const { on, off } = platformsFor(item, m === "dry-run" && entry ? "live" : m, envFor(accountOf(item)));
+  return { on: on.filter((n) => !doneOn(entry, n)), off: [...off, ...on.filter((n) => doneOn(entry, n)).map((n) => `${n}: already posted by autopost`)], entry };
+}
+
 // ---- validate ------------------------------------------------------------------------------------
 
 function validate({ files = true } = {}) {
@@ -165,6 +179,7 @@ function validate({ files = true } = {}) {
         const p = mediaPath(it[k]);
         if (p && !existsSync(p)) problems.push(`${at}: ${k} file not found: ${config.mediaRoot ?? "media"}/${it[k]}`);
       }
+      if (it.overlay && !existsSync(join(HERE, it.overlay))) problems.push(`${at}: overlay file not found: autopost/${it.overlay}`);
       const v = mediaPath(it.video);
       if (v && existsSync(v) && statSync(v).size > 1024 ** 3) problems.push(`${at}: video is over 1 GB`);
     }
@@ -174,10 +189,22 @@ function validate({ files = true } = {}) {
 
 // ---- plan ----------------------------------------------------------------------------------------
 
-function nextItem(log, m, acct) {
-  const done = new Set(log.posts.filter((p) => p.mode === logMode(m)).map((p) => p.id));
-  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !allPosted(it) && !done.has(it.id)) ?? null;
+function nextItem(log, m, acct, skip = new Set()) {
+  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !skip.has(it.id) && owed(it, m, log).on.length) ?? null;
 }
+
+// Uploading ahead: YouTube can hold a private upload and make it public at a set time, so posts land on
+// the minute even when GitHub starts the job late or skips it. Only when YouTube is the account's one app,
+// since the others can't be scheduled this way. Returns how many hours ahead to fill (0 = off).
+const MAX_PER_RUN = 4; // YouTube's free quota is about six uploads a day
+function aheadHours(acct, m) {
+  if (m !== "live" && m !== "dry-run") return 0;
+  const on = Object.keys(PLATFORMS).filter((n) => optsFor(acct, n).enabled);
+  return on.length === 1 && on[0] === "youtube" ? Number(optsFor(acct, "youtube").scheduleAheadHours ?? 0) : 0;
+}
+// Every slot an account has used, counting each app's post (an app can catch up in a later slot).
+const usedSlots = (log, m, acct) => new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct)
+  .flatMap((p) => [p.slot, ...Object.values(p.results).map((r) => r.slot)]).filter(Boolean));
 
 function makePlan() {
   const m = mode();
@@ -199,36 +226,54 @@ function makePlan() {
       if (!item) plan.why = `nothing left to post${only ? ` for account ${only}` : ""}: add videos to queue.json`;
       else plan = { ...plan, job: "post", id: item.id, account: accountOf(item), slot: `manual ${now.toISOString()}`, why: "posting now (run by hand)" };
     } else {
-      // Each account keeps its own times and its own place in the queue; one post per run.
+      // Each account keeps its own times and its own place in the queue. A run posts what is due, plus,
+      // when uploading ahead, the coming slots' videos (all for one account per run).
       const waiting = [];
       for (const acct of Object.keys(accounts())) {
-        const used = new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct).map((p) => p.slot));
-        const slot = dueSlot(now, scheduleFor(acct), used);
-        if (!slot) { waiting.push(`${acct} next ${upcomingSlots(now, scheduleFor(acct), 1)[0] ?? "none set"}`); continue; }
-        const item = nextItem(log, m, acct);
-        if (!item) { waiting.push(`${acct}: slot ${slot} is due but its queue is empty`); continue; }
-        plan = { ...plan, job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` };
+        const sched = scheduleFor(acct);
+        const used = usedSlots(log, m, acct);
+        const chosen = new Set();
+        const jobs = [];
+        const slot = dueSlot(now, sched, used);
+        if (slot) {
+          const item = nextItem(log, m, acct);
+          if (item) { jobs.push({ job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` }); chosen.add(item.id); }
+          else waiting.push(`${acct}: slot ${slot} is due but its queue is empty`);
+        }
+        const hours = aheadHours(acct, m);
+        if (hours) {
+          for (const s of aheadSlots(now, sched, used, hours)) {
+            if (jobs.length >= MAX_PER_RUN) break;
+            const item = nextItem(log, m, acct, chosen);
+            if (!item) break;
+            jobs.push({ job: "post", id: item.id, account: acct, slot: s, publishAt: slotTime(s, sched.timezone).toISOString(), why: `uploaded ahead, goes public at ${s}` });
+            chosen.add(item.id);
+          }
+        }
+        if (!jobs.length) { if (!slot) waiting.push(`${acct} next ${upcomingSlots(now, sched, 1)[0] ?? "none set"}`); continue; }
+        plan = { ...plan, ...jobs[0], more: jobs.slice(1) };
         break;
       }
       if (plan.job === "none") plan.why = `no slot due (${localParts(now, config.timezone).ymd}, ${config.timezone}); ${waiting.join("; ")}`;
     }
   }
   if (plan.id) {
-    const item = queue.items.find((it) => it.id === plan.id);
-    plan.dirs = [...new Set([item.video, item.cover].filter(Boolean).map((r) => dirname(join(config.mediaRoot ?? "media", r))))];
+    const items = [plan.id, ...(plan.more ?? []).map((j) => j.id)].map((id) => queue.items.find((it) => it.id === id));
+    plan.dirs = [...new Set(items.flatMap((item) => [item.video, item.cover]).filter(Boolean).map((r) => dirname(join(config.mediaRoot ?? "media", r))))];
   }
   writeFileSync(PLAN_PATH, JSON.stringify(plan, null, 2));
   output("job", plan.job);
   output("dirs", (plan.dirs ?? []).join("\n"));
   console.log(`Mode ${m}: ${plan.job === "none" ? "nothing to do" : plan.job + " " + plan.id}. ${plan.why}`);
+  for (const j of plan.more ?? []) console.log(`  and ${j.id}: ${j.why}`);
   return plan;
 }
 
 // ---- run -----------------------------------------------------------------------------------------
 
-async function postTo(name, item, files, m, aenv) {
+async function postTo(name, item, files, m, aenv, publishAt) {
   const opts = optsFor(accountOf(item), name);
-  if (name === "youtube") return youtube.post(item, files, opts, aenv, m === "test" ? "private" : (opts.privacy ?? "public"));
+  if (name === "youtube") return youtube.post(item, files, opts, aenv, m === "test" ? "private" : (opts.privacy ?? "public"), publishAt);
   if (name === "instagram") return instagram.post(item, files, opts, aenv);
   if (name === "tiktok") {
     const privacy = m === "test" ? "SELF_ONLY" : (opts.privacy ?? "PUBLIC_TO_EVERYONE");
@@ -240,6 +285,44 @@ async function run() {
   const plan = existsSync(PLAN_PATH) ? readJson(PLAN_PATH) : makePlan();
   rmSync(PLAN_PATH, { force: true }); // a plan is used once
   if (plan.job === "none") return 0;
+  let failed = 0;
+  for (const job of [plan, ...(plan.more ?? [])]) failed += await runOne({ ...job, mode: plan.mode });
+  return failed ? 1 : 0;
+}
+
+// An ffmpeg filter that draws `text` in a bordered box, sized for a 1080x1920 video by default. The font
+// should be monospaced (the wrap counts characters); the default is on GitHub's Ubuntu runners.
+function textBoxFilter(text, id) {
+  const o = { font: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", charWidth: 0.602, left: 50, right: 50, top: 1450, bottom: 1700,
+    maxSize: 44, minSize: 24, color: "#f5ecd7", box: "#0a0a0e", boxOpacity: 0.82, border: 5, ...(config.onScreenText ?? {}) };
+  const width = 1080 - o.left - o.right, pad = 24;
+  const wrap = (size) => {
+    const per = Math.max(8, Math.floor((width - 2 * pad - 2 * o.border) / (size * o.charWidth)));
+    const lines = [];
+    for (const word of text.split(/\s+/).filter(Boolean)) {
+      const last = lines.at(-1);
+      if (last !== undefined && (last + " " + word).length <= per) lines[lines.length - 1] = last + " " + word;
+      else lines.push(word);
+    }
+    return lines;
+  };
+  let size = o.maxSize, lines = wrap(size);
+  while (size > o.minSize && o.top + lines.length * size * 1.6 + 2 * pad > o.bottom) lines = wrap(size -= 2);
+  const lh = Math.round(size * 1.6), h = lines.length * lh + 2 * pad;
+  const hex = (c) => "0x" + c.replace("#", "");
+  const parts = [
+    `drawbox=x=${o.left}:y=${o.top}:w=${width}:h=${h}:color=${hex(o.box)}@${o.boxOpacity}:t=fill`,
+    `drawbox=x=${o.left}:y=${o.top}:w=${width}:h=${h}:color=${hex(o.color)}:t=${o.border}`,
+  ];
+  lines.forEach((line, i) => {
+    const file = join(tmpdir(), `autopost-${id}-line${i}.txt`);
+    writeFileSync(file, line);
+    parts.push(`drawtext=fontfile='${o.font}':textfile='${file}':fontsize=${size}:fontcolor=${hex(o.color)}:x=(w-text_w)/2:y=${o.top + pad + i * lh + Math.round((lh - size) / 2)}`);
+  });
+  return parts.join(",");
+}
+
+async function runOne(plan) {
   const m = plan.mode;
   const item = queue.items.find((it) => it.id === plan.id);
   const files = { video: mediaPath(item.video), cover: mediaPath(item.cover) };
@@ -249,8 +332,7 @@ async function run() {
   const acct = accountOf(item);
   const aenv = envFor(acct);
   const log = readLog();
-  let entry = log.posts.find((p) => p.id === item.id && p.mode === logMode(m));
-  const { on, off } = platformsFor(item, m, aenv);
+  let { on, off, entry } = owed(item, m, log);
   const targets = plan.job === "retry"
     ? Object.entries(entry.results).filter(([, r]) => !r.ok && r.attempts < MAX_ATTEMPTS).map(([n]) => n)
     : on;
@@ -260,7 +342,7 @@ async function run() {
     summary([
       `### Autopost dry run: would post \`${item.id}\` to account ${acct} (${plan.why})`, "",
       `Video: ${config.mediaRoot ?? "media"}/${item.video} (${size} MB)`,
-      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${optsFor(acct, "youtube").privacy ?? "public"}` : n === "tiktok" ? `via ${optsFor(acct, "tiktok").method ?? "inbox"}` : "reel"}`),
+      ...on.map((n) => `- **${n}**: ${n === "youtube" ? `"${item.youtube.title}" as ${plan.publishAt ? `private until ${plan.publishAt}, then public` : (optsFor(acct, "youtube").privacy ?? "public")}` : n === "tiktok" ? `via ${optsFor(acct, "tiktok").method ?? "inbox"}` : "reel"}`),
       ...off.map((o) => `- left out: ${o}`),
       "", "Nothing was posted. Set the repository variable AUTOPOST_MODE to `test` or `live` to post.",
     ].join("\n"));
@@ -272,8 +354,24 @@ async function run() {
     summary([`### Autopost (${m}): nothing posted, no app is ready`, "", ...off.map((o) => `- ${o}`), "", `${item.id} stays next in the queue.`].join("\n"));
     return 1;
   }
+  // A retried upload keeps its publish time while that is still ahead; otherwise it goes up straight away.
+  if (plan.job === "retry" && entry?.publishAt && Date.parse(entry.publishAt) > Date.now() + 10 * 60000) plan.publishAt = entry.publishAt;
+  // On-screen extras, laid over the video as it goes up (the video file in the repository stays as it is):
+  // "onScreenText" draws a text box, for example the hook, the whole video long (style: config.onScreenText);
+  // "overlay" is a PNG in autopost/ the size of the video, transparent except what it adds.
+  if (item.overlay || item.onScreenText) {
+    const out = join(tmpdir(), `autopost-${item.id}.mp4`);
+    const args = ["-v", "error", "-y", "-i", files.video];
+    let chain = "[0:v]";
+    if (item.onScreenText) chain += textBoxFilter(item.onScreenText, item.id) + ",";
+    if (item.overlay) { args.push("-i", join(HERE, item.overlay)); chain = chain.replace(/,?$/, "[t];[t][1:v]overlay,"); }
+    args.push("-filter_complex", chain.replace(/,$/, "") + "[v]", "-map", "[v]", "-map", "0:a?",
+      "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy", out);
+    execFileSync("ffmpeg", args);
+    files.video = out;
+  }
   if (!entry) {
-    entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off };
+    entry = { id: item.id, account: acct, slot: plan.slot, mode: logMode(m), at: new Date().toISOString(), results: {}, skipped: off, ...(plan.publishAt ? { publishAt: plan.publishAt } : {}) };
     log.posts.push(entry);
   }
 
@@ -282,12 +380,12 @@ async function run() {
   for (const name of targets) {
     const prev = entry.results[name] ?? { attempts: 0 };
     try {
-      const r = await postTo(name, item, files, m, aenv);
-      entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), ...r };
-      lines.push(`- **${name}**: posted${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
+      const r = await postTo(name, item, files, m, aenv, name === "youtube" ? plan.publishAt : undefined);
+      entry.results[name] = { ok: true, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, ...r };
+      lines.push(`- **${name}**: ${r.publishAt ? `uploaded, goes public ${r.publishAt}` : "posted"}${r.url ? ` ${r.url}` : ""}${r.note ? ` (${r.note})` : ""}`);
     } catch (e) {
       failed++;
-      entry.results[name] = { ok: false, attempts: prev.attempts + 1, at: new Date().toISOString(), error: e.message.slice(0, 1000) };
+      entry.results[name] = { ok: false, attempts: prev.attempts + 1, at: new Date().toISOString(), slot: prev.slot ?? plan.slot, error: e.message.slice(0, 1000) };
       const more = prev.attempts + 1 < MAX_ATTEMPTS ? "will try again next hour" : "gave up after " + MAX_ATTEMPTS + " tries";
       lines.push(`- **${name}**: FAILED, ${more}: ${e.message.slice(0, 500)}`);
     }
@@ -326,11 +424,10 @@ function status() {
   const m = mode();
   const log = readLog();
   const mine = log.posts.filter((p) => p.mode === logMode(m));
-  const done = new Set(mine.map((p) => p.id));
   const lines = [`### Autopost status (mode ${m})`, ""];
   for (const acct of Object.keys(accounts())) {
     const items = (queue.items ?? []).filter((it) => accountOf(it) === acct);
-    const left = items.filter((it) => !it.hold && !allPosted(it) && !done.has(it.id));
+    const left = items.filter((it) => !it.hold && owed(it, m, log).on.length);
     lines.push(
       `**Account ${acct}**: posted ${mine.filter((p) => entryAccount(p) === acct).length} by autopost, ${items.filter(allPosted).length} marked as posted by hand on every app. Left: ${left.length}. On hold: ${items.filter((i) => i.hold).length}.`,
       `Next up: ${left.slice(0, 3).map((i) => i.id).join(", ") || "nothing"}`,

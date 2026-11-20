@@ -57,6 +57,36 @@ export function upcomingSlots(now, config, count = 6) {
   return out;
 }
 
+// The moment a slot key ("YYYY-MM-DD HH:MM", local time in timeZone) happens.
+export function slotTime(key, timeZone) {
+  const [ymd, hm] = key.split(" ");
+  const [y, mo, d] = ymd.split("-").map(Number);
+  const [h, mi] = hm.split(":").map(Number);
+  const want = Date.UTC(y, mo - 1, d, h, mi);
+  let t = want;
+  for (let i = 0; i < 3; i++) {
+    const p = localParts(new Date(t), timeZone);
+    const [py, pm, pd] = p.ymd.split("-").map(Number);
+    t += want - Date.UTC(py, pm - 1, pd, Math.floor(p.minutes / 60), p.minutes % 60);
+  }
+  return new Date(t);
+}
+
+// Unused slots from 10 minutes from now up to `hours` ahead, soonest first (for uploading ahead).
+export function aheadSlots(now, config, usedSlots, hours) {
+  const from = now.getTime() + 10 * 60000, to = now.getTime() + hours * 3600000;
+  const out = new Map();
+  for (let d = 0; d <= Math.ceil(hours / 24) + 1; d++) {
+    const { ymd, day } = localParts(new Date(now.getTime() + d * 86400000), config.timezone);
+    for (const t of slotsFor(day, config.slots)) {
+      const key = `${ymd} ${t}`;
+      const at = slotTime(key, config.timezone).getTime();
+      if (at > from && at <= to && !usedSlots.has(key)) out.set(key, at);
+    }
+  }
+  return [...out].sort((a, b) => a[1] - b[1]).map(([k]) => k);
+}
+
 export function validateSlots(slots) {
   for (const [k, list] of Object.entries(slots)) {
     if (k !== "default" && !DAYS.includes(k)) throw new Error(`config.slots: unknown key "${k}" (use default, sun, mon, tue, wed, thu, fri, sat)`);
