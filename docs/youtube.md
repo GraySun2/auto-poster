@@ -46,6 +46,6 @@ Repository → **Actions** → **Autopost** → **Run workflow** → action `che
 - `madeForKids`: must be honest; `false` for content not made for children.
 - `containsSyntheticMedia`: YouTube's label for realistic altered or AI-made footage that could be mistaken for real.
 - `setThumbnail`: uploads the cover image. Needs a phone-verified channel, and Shorts mostly show a frame anyway.
-- `scheduleAheadHours`: for example `18`. GitHub starts scheduled jobs late and sometimes skips them, so with this set each run uploads the videos for that many hours of coming slots as private with a publish time, and YouTube makes each one public on the minute (at most four per run, for YouTube's quota of about six uploads a day). Works only while YouTube is the account's only app turned on; leave it out to post when a run finds a slot due.
+- `scheduleAheadHours`: for example `18`. GitHub starts scheduled jobs late and sometimes skips them, so with this set each run uploads the videos for that many hours of coming slots as private with a publish time, and YouTube makes each one public on the minute (at most four per run, for YouTube's quota of about six uploads a day). Instagram and TikTok can't be scheduled this way, so they keep their own place in the queue and post when a run finds a slot due. Leave it out to post YouTube that way too.
 
 To cut the job off: myaccount.google.com → **Security** → **Your connections to third-party apps & services** → `autopost` → remove access.
