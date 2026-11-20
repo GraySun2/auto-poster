@@ -10,7 +10,7 @@ Make your own copy with **Use this template** (top of this page), keep it **priv
 
 1. **The queue.** `autopost/queue.json` lists the videos in the order they post. Each one names its MP4, an optional cover, and the words for each app (YouTube title and description, Instagram caption, TikTok caption).
 2. **The schedule.** `autopost/config.json` holds the posting times as local clock times in your time zone, per weekday (for example 11:00 and 19:00, and three times on Fridays).
-3. **The job.** `.github/workflows/autopost.yml` wakes up every hour. If a posting time has come (in the last three hours) and is not used yet, it posts the next video in the queue to each app that is set up, then records it.
+3. **The job.** `.github/workflows/autopost.yml` wakes up twice an hour. If a posting time has come (in the last three hours) and is not used yet, it posts the next video in the queue to each app that is set up, then records it. With YouTube's `scheduleAheadHours` on ([docs/youtube.md](docs/youtube.md)), it uploads the coming hours' videos early with a publish time instead, so they go public on the minute.
 4. **The log.** What posted, where, and the links, is saved to `log.json` on a branch of its own, `autopost-log`, so your main branch only changes when you change it. A video is never posted twice: the log is written after each app.
 5. **When something fails,** the run goes red, GitHub emails you, and the app that failed is tried again on the next hour, up to three times. The other apps are not posted again.
 
@@ -82,7 +82,7 @@ It can only change this one repository's secrets; it cannot read them, read your
 
 **Actions** → **Autopost** → **Run workflow**:
 
-- **action** `post-if-due` (what the hourly run does), `post-now` (post the next video now, whatever the time), `check` (sign-ins), `status` (what has posted, what's next, the next times).
+- **action** `post-if-due` (what the scheduled run does), `post-now` (post the next video now, whatever the time), `check` (sign-ins), `status` (what has posted, what's next, the next times).
 - **mode** `setting` uses `AUTOPOST_MODE`; the others override it for this one run.
 
 Each run's summary page lists what it posted, with links. For TikTok in inbox mode it also shows the caption to paste.
@@ -98,13 +98,18 @@ Each run's summary page lists what it posted, with links. For TikTok in inbox mo
   "hold": false,
   "posted": ["instagram"],
   "platforms": ["youtube", "tiktok"],
+  "onScreenText": "Optional: the hook, shown in a box the whole video long",
   "youtube": { "title": "Up to 100 characters", "description": "...", "tags": ["optional"] },
   "instagram": { "caption": "Up to 2200 characters, 30 hashtags" },
   "tiktok": { "caption": "Up to 2200 characters" }
 }
 ```
 
-Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` and `video` are required. `hold: true` keeps a video back for now; `posted` marks a video you already posted yourself: `true` for every app, or a list such as `["instagram"]` for just those apps. Leave out an app's block, or list `platforms`, to skip an app for that video. `overlay` (a path inside `autopost/`) is a 1080x1920 PNG, transparent except what it adds, such as the hook as on-screen text; the job lays it over the video with ffmpeg while uploading, so your video file stays as it is. `coverAtSeconds` picks the cover frame on Instagram and TikTok (neither takes an uploaded image through this route); YouTube uses `cover` only if `setThumbnail` is on. Videos post in the order they appear; to change the order, move them. Each app keeps its own place in the queue: a video counts as finished on an app once it has posted there, so an app you set up later (turn it on with `enabled: true` once its sign-in is saved) starts from the oldest video it hasn't had, one per slot. `node autopost/autopost.mjs validate` checks the file.
+Paths are relative to `mediaRoot` in `config.json` (default `media`). Only `id` and `video` are required. `hold: true` keeps a video back for now; `posted` marks a video you already posted yourself: `true` for every app, or a list such as `["instagram"]` for just those apps. Leave out an app's block, or list `platforms`, to skip an app for that video. `onScreenText` draws that text in a box over the video (below the middle, above where the apps put their own text); its look can be set in `config.json` under `onScreenText` (`font`, a monospaced .ttf, `color`, `box`, `top`, `bottom`, `maxSize`, `minSize`), and long text shrinks to fit. `overlay` (a path inside `autopost/`) is a 1080x1920 PNG for anything else, transparent except what it adds, such as the hook as on-screen text; the job lays it over the video with ffmpeg while uploading, so your video file stays as it is. `coverAtSeconds` picks the cover frame on Instagram and TikTok (neither takes an uploaded image through this route); YouTube uses `cover` only if `setThumbnail` is on. Videos post in the order they appear; to change the order, move them. Each app keeps its own place in the queue: a video counts as finished on an app once it has posted there, so an app you set up later (turn it on with `enabled: true` once its sign-in is saved) starts from the oldest video it hasn't had, one per slot. `node autopost/autopost.mjs validate` checks the file.
+
+### Lead with the hook
+
+The first line people see decides whether they stop scrolling. On a Short that is the title; on Instagram and TikTok it is the caption's first line. Put the video's opening line (its hook) first in the YouTube title and description and in each caption, with hashtags after, and set `onScreenText` to the same line so it is on screen too. All of this goes on as the video uploads, so the video files need no new export.
 
 ## Several accounts on the same app
 
@@ -138,7 +143,7 @@ Copy the `autopost/` folder and the two files in `.github/workflows/` into that 
 - **TikTok** only lets an app post straight to your profile after TikTok audits it; before that, direct posts must be private and the account itself private. So the default here is **inbox mode**: the video arrives in your TikTok inbox as a draft and you tap the notification to post it (the run summary has the caption to paste). Switch `method` to `direct` once your app passes the audit. At most 5 drafts can wait in the inbox per 24 hours.
 - **YouTube** gives a new Google Cloud project a daily upload allowance that is plenty for a few videos a day. If a video comes up private when you asked for public, the run says so; Google can restrict apps it hasn't reviewed (there is an audit form linked from the YouTube API docs).
 - **Instagram** allows a limited number of API posts per day (100 at the time of writing), far above this schedule. Vertical 9:16 video is what Reels expect.
-- **GitHub** gives private repositories 2,000 free Actions minutes a month. The hourly check takes well under a minute; a post takes a few. GitHub may start scheduled runs late at busy times (that's why a time stays open for three hours) and, in public repositories, turns schedules off after 60 days without activity.
+- **GitHub** gives private repositories 2,000 free Actions minutes a month. Each check bills a minute, so twice an hour is about 1,440 minutes a month; a post takes a few. GitHub starts scheduled runs late at busy times and sometimes skips them for hours (that's why a time stays open for three hours, and why YouTube's `scheduleAheadHours` exists) and, in public repositories, turns schedules off after 60 days without activity.
 - The API details here were checked against each app's documentation in November 2026. Apps change their APIs; if something stops working, the run's error message says which call failed and what the app answered.
 
 ## Files
@@ -151,7 +156,7 @@ autopost/
   lib/                  one file per app, plus the schedule and helpers
   importers/            fill the queue from other formats
 .github/workflows/
-  autopost.yml          the hourly job
+  autopost.yml          the scheduled job
   autopost-connect.yml  one-time sign-in for TikTok and Instagram
 docs/                   setup for each app
 media/                  your videos (or point mediaRoot elsewhere)

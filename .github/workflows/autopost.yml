@@ -1,11 +1,14 @@
 # Posts the next video in autopost/queue.json when one of the times in autopost/config.json comes round.
-# Runs every hour; most runs find nothing due and finish in seconds. See README.md.
+# Runs twice an hour; most runs find nothing due and finish in seconds. See README.md.
 # Pause: set the repository variable AUTOPOST_MODE to "off" (or turn this workflow off in the Actions tab).
 name: Autopost
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    # GitHub runs scheduled jobs on a best-effort basis and drops some, so this checks twice an hour;
+    # a slot that is missed still posts within catchUpHours (and with YouTube scheduleAheadHours, it is
+    # already uploaded with its publish time).
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       action:

@@ -290,6 +290,38 @@ async function run() {
   return failed ? 1 : 0;
 }
 
+// An ffmpeg filter that draws `text` in a bordered box, sized for a 1080x1920 video by default. The font
+// should be monospaced (the wrap counts characters); the default is on GitHub's Ubuntu runners.
+function textBoxFilter(text, id) {
+  const o = { font: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", charWidth: 0.602, left: 50, right: 50, top: 1450, bottom: 1700,
+    maxSize: 44, minSize: 24, color: "#f5ecd7", box: "#0a0a0e", boxOpacity: 0.82, border: 5, ...(config.onScreenText ?? {}) };
+  const width = 1080 - o.left - o.right, pad = 24;
+  const wrap = (size) => {
+    const per = Math.max(8, Math.floor((width - 2 * pad - 2 * o.border) / (size * o.charWidth)));
+    const lines = [];
+    for (const word of text.split(/\s+/).filter(Boolean)) {
+      const last = lines.at(-1);
+      if (last !== undefined && (last + " " + word).length <= per) lines[lines.length - 1] = last + " " + word;
+      else lines.push(word);
+    }
+    return lines;
+  };
+  let size = o.maxSize, lines = wrap(size);
+  while (size > o.minSize && o.top + lines.length * size * 1.6 + 2 * pad > o.bottom) lines = wrap(size -= 2);
+  const lh = Math.round(size * 1.6), h = lines.length * lh + 2 * pad;
+  const hex = (c) => "0x" + c.replace("#", "");
+  const parts = [
+    `drawbox=x=${o.left}:y=${o.top}:w=${width}:h=${h}:color=${hex(o.box)}@${o.boxOpacity}:t=fill`,
+    `drawbox=x=${o.left}:y=${o.top}:w=${width}:h=${h}:color=${hex(o.color)}:t=${o.border}`,
+  ];
+  lines.forEach((line, i) => {
+    const file = join(tmpdir(), `autopost-${id}-line${i}.txt`);
+    writeFileSync(file, line);
+    parts.push(`drawtext=fontfile='${o.font}':textfile='${file}':fontsize=${size}:fontcolor=${hex(o.color)}:x=(w-text_w)/2:y=${o.top + pad + i * lh + Math.round((lh - size) / 2)}`);
+  });
+  return parts.join(",");
+}
+
 async function runOne(plan) {
   const m = plan.mode;
   const item = queue.items.find((it) => it.id === plan.id);
@@ -324,12 +356,18 @@ async function runOne(plan) {
   }
   // A retried upload keeps its publish time while that is still ahead; otherwise it goes up straight away.
   if (plan.job === "retry" && entry?.publishAt && Date.parse(entry.publishAt) > Date.now() + 10 * 60000) plan.publishAt = entry.publishAt;
-  // An item's "overlay" (a 1080x1920 PNG in autopost/, transparent except what it adds, such as the hook
-  // on screen) is laid over the video as it goes up; the video file in the repository stays as it is.
-  if (item.overlay) {
+  // On-screen extras, laid over the video as it goes up (the video file in the repository stays as it is):
+  // "onScreenText" draws a text box, for example the hook, the whole video long (style: config.onScreenText);
+  // "overlay" is a PNG in autopost/ the size of the video, transparent except what it adds.
+  if (item.overlay || item.onScreenText) {
     const out = join(tmpdir(), `autopost-${item.id}.mp4`);
-    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", files.video, "-i", join(HERE, item.overlay),
-      "-filter_complex", "[0][1]overlay", "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy", out]);
+    const args = ["-v", "error", "-y", "-i", files.video];
+    let chain = "[0:v]";
+    if (item.onScreenText) chain += textBoxFilter(item.onScreenText, item.id) + ",";
+    if (item.overlay) { args.push("-i", join(HERE, item.overlay)); chain = chain.replace(/,?$/, "[t];[t][1:v]overlay,"); }
+    args.push("-filter_complex", chain.replace(/,$/, "") + "[v]", "-map", "[v]", "-map", "0:a?",
+      "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy", out);
+    execFileSync("ffmpeg", args);
     files.video = out;
   }
   if (!entry) {
