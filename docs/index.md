@@ -4,4 +4,5 @@ A small, free tool that posts the owner's own short videos to their own YouTube,
 
 - [Privacy policy](privacy.html)
 - [Terms of service](terms.html)
+- [TikTok sign-in page](connect.html)
 - [Source and setup guide](https://github.com/GraySun2/auto-poster)

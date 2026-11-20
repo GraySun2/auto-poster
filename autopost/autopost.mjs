@@ -469,8 +469,12 @@ function tiktokLink() {
   for (const k of ["TIKTOK_CLIENT_KEY", "TIKTOK_REDIRECT_URI"]) if (!env[k]) throw new Error(`${k} is not set (README, "TikTok")`);
   const scope = (config.platforms?.tiktok?.method ?? "inbox") === "direct" ? "user.info.basic,video.publish" : "user.info.basic,video.upload";
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
-  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: `autopost-${env.AUTOPOST_ACCOUNT_NAME}` }).toString();
-  summary(`### TikTok sign-in link for account ${env.AUTOPOST_ACCOUNT_NAME}\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok", the same account, and paste it. The code works for a few minutes only.`);
+  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: `autopost~${env.AUTOPOST_ACCOUNT_NAME}~${env.GITHUB_REPOSITORY ?? ""}` }).toString();
+  const redirect = env.TIKTOK_REDIRECT_URI.trim();
+  const page = redirect.endsWith("/connect.html")
+    ? `\n\nThe sign-in page with its own "Sign in with TikTok" button (for TikTok's review video):\n\n${redirect}?${new URLSearchParams({ key: env.TIKTOK_CLIENT_KEY.trim(), account: env.AUTOPOST_ACCOUNT_NAME, repo: env.GITHUB_REPOSITORY ?? "" })}`
+    : "";
+  summary(`### TikTok sign-in link for account ${env.AUTOPOST_ACCOUNT_NAME}\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok", the same account, and paste it. The code works for a few minutes only.${page}`);
   return 0;
 }
 

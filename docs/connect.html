@@ -1,0 +1,121 @@
+<!doctype html>
+<!-- autopost sign-in page. Serve it with GitHub Pages (Settings → Pages → main → /docs) and use its address,
+     for example https://your-name.github.io/your-repo/connect.html, as the TikTok redirect URI.
+     It holds no keys: the client key and repository arrive in the address from the "Autopost connect" run. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>autopost sign-in</title>
+<style>
+  :root { --bg: #f6f5f2; --card: #fff; --ink: #1b1b1f; --muted: #5d5d66; --line: #dddbd5; --accent: #1f6feb; --ok: #1a7f37; --bad: #b42318; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111214; --card: #1b1c1f; --ink: #ececef; --muted: #a2a2ab; --line: #2e2f34; --accent: #6ea8ff; --ok: #4ac26b; --bad: #ff7b72; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  ol { padding-left: 1.2rem; margin: 8px 0 0; }
+  li { margin: 6px 0; }
+  .btn { display: inline-block; border: 0; border-radius: 999px; padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; background: var(--ink); color: var(--bg); }
+  .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .code { font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; word-break: break-all; margin: 12px 0; user-select: all; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  small, .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>autopost</h1>
+  <p class="sub">Sends your finished short videos to your own TikTok drafts. You add the caption and post them yourself in the TikTok app.</p>
+
+  <section id="start" class="card" hidden>
+    <h2>Connect your TikTok account</h2>
+    <p>autopost asks for two permissions:</p>
+    <ol>
+      <li><b>Your basic profile</b> (name and picture), to show which account is connected.</li>
+      <li><b>Upload videos to your drafts.</b> Each video waits in your TikTok inbox. Nothing is posted until you open it, write the caption and tap Post.</li>
+    </ol>
+    <p class="row" style="margin-top:16px"><a id="signin" class="btn" href="#">Sign in with TikTok</a></p>
+    <p><small>You can remove access at any time in TikTok: Settings and privacy → Security &amp; permissions → Apps and services.</small></p>
+  </section>
+
+  <section id="nokey" class="card" hidden>
+    <h2>Open the sign-in link from your repository</h2>
+    <p>Run <b>Actions → Autopost connect</b> with app <code>tiktok-link</code>, then open the link on the run's summary page. It brings you back here with everything filled in.</p>
+  </section>
+
+  <section id="done" class="card" hidden>
+    <h2 class="ok">Signed in with TikTok</h2>
+    <p>One step left, within a few minutes (the code expires): give this code to your repository.</p>
+    <div id="code" class="code"></div>
+    <p class="row"><button id="copy" class="btn" type="button">Copy code</button> <span id="copied" class="muted" hidden>Copied</span></p>
+    <ol>
+      <li>Open <a id="wf" href="#" target="_blank" rel="noopener">Autopost connect</a> and tap <b>Run workflow</b>.</li>
+      <li>Set <b>app</b> to <code>tiktok</code><span id="acctline"></span> and paste the code into <b>pasted</b>.</li>
+      <li>Tap <b>Run workflow</b>. It ends with "TikTok connected".</li>
+    </ol>
+  </section>
+
+  <section id="failed" class="card" hidden>
+    <h2 class="bad">TikTok did not sign you in</h2>
+    <p id="why"></p>
+    <p><a id="again" class="btn secondary" href="#">Try again</a></p>
+  </section>
+
+  <p><small><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms of service</a></small></p>
+</main>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const show = (id) => { document.getElementById(id).hidden = false; };
+  const safe = (s, re) => (s && re.test(s) ? s : "");
+  const here = location.origin + location.pathname;
+
+  // state comes back from TikTok unchanged: "autopost~<account>~<owner/repo>"
+  const parts = (q.get("state") || "").split("~");
+  const account = safe(q.get("account") || parts[1], /^[\w.-]{1,40}$/);
+  const repo = safe(q.get("repo") || parts[2], /^[\w.-]{1,100}\/[\w.-]{1,100}$/);
+  const wf = repo ? `https://github.com/${repo}/actions/workflows/autopost-connect.yml` : "";
+
+  const key = safe(q.get("key"), /^[\w-]{4,100}$/);
+  const scope = q.get("scope") === "direct" ? "user.info.basic,video.publish" : "user.info.basic,video.upload";
+  const signinUrl = key ? "https://www.tiktok.com/v2/auth/authorize/?" + new URLSearchParams({
+    client_key: key, scope, response_type: "code", redirect_uri: here, state: `autopost~${account || "main"}~${repo}`,
+  }) : "";
+
+  if (q.get("code")) {
+    show("done");
+    const code = q.get("code");
+    document.getElementById("code").textContent = code;
+    const link = document.getElementById("wf");
+    if (wf) link.href = wf; else link.removeAttribute("href");
+    if (account && account !== "main") document.getElementById("acctline").textContent = `, account to ${account},`;
+    document.getElementById("copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(code); document.getElementById("copied").hidden = false; }
+      catch { getSelection().selectAllChildren(document.getElementById("code")); }
+    };
+    history.replaceState(null, "", here); // keep the code out of the address bar and history
+  } else if (q.get("error")) {
+    show("failed");
+    document.getElementById("why").textContent = q.get("error_description") || q.get("error");
+    const again = document.getElementById("again");
+    if (signinUrl) again.href = signinUrl; else again.hidden = true;
+  } else if (signinUrl) {
+    show("start");
+    document.getElementById("signin").href = signinUrl;
+  } else {
+    show("nokey");
+  }
+})();
+</script>
+</body>
+</html>
