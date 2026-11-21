@@ -189,22 +189,26 @@ function validate({ files = true } = {}) {
 
 // ---- plan ----------------------------------------------------------------------------------------
 
-function nextItem(log, m, acct, skip = new Set()) {
-  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !skip.has(it.id) && owed(it, m, log).on.length) ?? null;
+// `only` limits it to items still owed to those apps.
+function nextItem(log, m, acct, skip = new Set(), only = null) {
+  return (queue.items ?? []).find((it) => (!acct || accountOf(it) === acct) && !it.hold && !skip.has(it.id)
+    && owed(it, m, log).on.some((n) => !only || only.includes(n))) ?? null;
 }
 
 // Uploading ahead: YouTube can hold a private upload and make it public at a set time, so posts land on
-// the minute even when GitHub starts the job late or skips it. Only when YouTube is the account's one app,
-// since the others can't be scheduled this way. Returns how many hours ahead to fill (0 = off).
+// the minute even when GitHub starts the job late or skips it. The other apps can't be scheduled this way,
+// so they keep their own place and post when a run finds a slot due. Returns hours ahead to fill (0 = off).
 const MAX_PER_RUN = 4; // YouTube's free quota is about six uploads a day
 function aheadHours(acct, m) {
   if (m !== "live" && m !== "dry-run") return 0;
-  const on = Object.keys(PLATFORMS).filter((n) => optsFor(acct, n).enabled);
-  return on.length === 1 && on[0] === "youtube" ? Number(optsFor(acct, "youtube").scheduleAheadHours ?? 0) : 0;
+  return optsFor(acct, "youtube").enabled ? Number(optsFor(acct, "youtube").scheduleAheadHours ?? 0) : 0;
 }
-// Every slot an account has used, counting each app's post (an app can catch up in a later slot).
-const usedSlots = (log, m, acct) => new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct)
-  .flatMap((p) => [p.slot, ...Object.values(p.results).map((r) => r.slot)]).filter(Boolean));
+// Every slot an account has used, counting each app's post (an app can catch up in a later slot);
+// with `names`, only the slots those apps used.
+const usedSlots = (log, m, acct, names = null) => new Set(log.posts.filter((p) => p.mode === logMode(m) && entryAccount(p) === acct)
+  .flatMap((p) => names
+    ? Object.entries(p.results).filter(([n]) => names.includes(n)).map(([, r]) => r.slot ?? p.slot)
+    : [p.slot, ...Object.values(p.results).map((r) => r.slot)]).filter(Boolean));
 
 function makePlan() {
   const m = mode();
@@ -231,25 +235,34 @@ function makePlan() {
       const waiting = [];
       for (const acct of Object.keys(accounts())) {
         const sched = scheduleFor(acct);
-        const used = usedSlots(log, m, acct);
-        const chosen = new Set();
         const jobs = [];
-        const slot = dueSlot(now, sched, used);
-        if (slot) {
-          const item = nextItem(log, m, acct);
-          if (item) { jobs.push({ job: "post", id: item.id, account: acct, slot, why: `${acct} slot ${slot} is due` }); chosen.add(item.id); }
-          else waiting.push(`${acct}: slot ${slot} is due but its queue is empty`);
-        }
+        // With upload-ahead, YouTube is its own lane (uploaded early) and the other apps another (posted when due).
         const hours = aheadHours(acct, m);
-        if (hours) {
-          for (const s of aheadSlots(now, sched, used, hours)) {
-            if (jobs.length >= MAX_PER_RUN) break;
-            const item = nextItem(log, m, acct, chosen);
-            if (!item) break;
-            jobs.push({ job: "post", id: item.id, account: acct, slot: s, publishAt: slotTime(s, sched.timezone).toISOString(), why: `uploaded ahead, goes public at ${s}` });
-            chosen.add(item.id);
+        const apps = Object.keys(PLATFORMS).filter((n) => optsFor(acct, n).enabled);
+        const lanes = hours ? [["youtube"], apps.filter((n) => n !== "youtube")] : [null];
+        let anyDue = false;
+        for (const only of lanes) {
+          if (only && !only.length) continue;
+          const used = usedSlots(log, m, acct, only);
+          const chosen = new Set();
+          const slot = dueSlot(now, sched, used);
+          if (slot) {
+            anyDue = true;
+            const item = nextItem(log, m, acct, chosen, only);
+            if (item) { jobs.push({ job: "post", id: item.id, account: acct, slot, only, why: `${acct} slot ${slot} is due${only ? ` (${only.join(", ")})` : ""}` }); chosen.add(item.id); }
+            else waiting.push(`${acct}: slot ${slot} is due but nothing is left to post${only ? ` to ${only.join(", ")}` : ""}`);
+          }
+          if (hours && only?.[0] === "youtube") {
+            for (const s of aheadSlots(now, sched, used, hours)) {
+              if (jobs.length >= MAX_PER_RUN) break;
+              const item = nextItem(log, m, acct, chosen, only);
+              if (!item) break;
+              jobs.push({ job: "post", id: item.id, account: acct, slot: s, only, publishAt: slotTime(s, sched.timezone).toISOString(), why: `uploaded ahead, goes public at ${s}` });
+              chosen.add(item.id);
+            }
           }
         }
+        const slot = anyDue;
         if (!jobs.length) { if (!slot) waiting.push(`${acct} next ${upcomingSlots(now, sched, 1)[0] ?? "none set"}`); continue; }
         plan = { ...plan, ...jobs[0], more: jobs.slice(1) };
         break;
@@ -335,7 +348,7 @@ async function runOne(plan) {
   let { on, off, entry } = owed(item, m, log);
   const targets = plan.job === "retry"
     ? Object.entries(entry.results).filter(([, r]) => !r.ok && r.attempts < MAX_ATTEMPTS).map(([n]) => n)
-    : on;
+    : on.filter((n) => !plan.only || plan.only.includes(n));
 
   if (m === "dry-run") {
     const size = (statSync(files.video).size / 1048576).toFixed(1);
@@ -456,8 +469,12 @@ function tiktokLink() {
   for (const k of ["TIKTOK_CLIENT_KEY", "TIKTOK_REDIRECT_URI"]) if (!env[k]) throw new Error(`${k} is not set (README, "TikTok")`);
   const scope = (config.platforms?.tiktok?.method ?? "inbox") === "direct" ? "user.info.basic,video.publish" : "user.info.basic,video.upload";
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
-  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: `autopost-${env.AUTOPOST_ACCOUNT_NAME}` }).toString();
-  summary(`### TikTok sign-in link for account ${env.AUTOPOST_ACCOUNT_NAME}\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok", the same account, and paste it. The code works for a few minutes only.`);
+  u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY.trim(), scope, response_type: "code", redirect_uri: env.TIKTOK_REDIRECT_URI.trim(), state: `autopost~${env.AUTOPOST_ACCOUNT_NAME}~${env.GITHUB_REPOSITORY ?? ""}` }).toString();
+  const redirect = env.TIKTOK_REDIRECT_URI.trim();
+  const page = redirect.endsWith("/connect.html")
+    ? `\n\nThe sign-in page with its own "Sign in with TikTok" button (for TikTok's review video):\n\n${redirect}?${new URLSearchParams({ key: env.TIKTOK_CLIENT_KEY.trim(), account: env.AUTOPOST_ACCOUNT_NAME, repo: env.GITHUB_REPOSITORY ?? "" })}`
+    : "";
+  summary(`### TikTok sign-in link for account ${env.AUTOPOST_ACCOUNT_NAME}\n\nOpen this, sign in to the TikTok account to post to, and allow it:\n\n${u}\n\nYou land on ${env.TIKTOK_REDIRECT_URI.trim()} with \`?code=...\` in the address. Copy everything after \`code=\` up to the next \`&\`, then run "Autopost connect" again with app "tiktok", the same account, and paste it. The code works for a few minutes only.${page}`);
   return 0;
 }
 
