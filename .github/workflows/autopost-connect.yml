@@ -13,7 +13,7 @@ on:
         type: choice
         options: [tiktok-link, tiktok, instagram]
       pasted:
-        description: "tiktok-link: leave empty. tiktok: the code= part of the address. Instagram: the token from the Graph API Explorer"
+        description: "tiktok-link: leave empty (a code pasted here signs in, like app tiktok). tiktok: the code= part of the address. Instagram: the token from the Graph API Explorer"
         type: string
         required: false
       account:
@@ -51,7 +51,11 @@ jobs:
           AUTOPOST_SECRETS: ${{ toJSON(secrets) }}
           AUTOPOST_VARS: ${{ toJSON(vars) }}
           AUTOPOST_ACCOUNT: ${{ inputs.account }}
-          TIKTOK_CODE: ${{ inputs.app == 'tiktok' && inputs.pasted || '' }}
+          TIKTOK_CODE: ${{ startsWith(inputs.app, 'tiktok') && inputs.pasted || '' }}
           META_USER_TOKEN: ${{ inputs.app == 'instagram' && inputs.pasted || '' }}
           META_PAGE_NAME: ${{ inputs.page_name }}
-        run: node autopost/autopost.mjs connect-${{ inputs.app }}
+          APP: ${{ inputs.app }}
+        # A code pasted with tiktok-link still picked means the sign-in step: treat it as app tiktok.
+        run: |
+          if [ "$APP" = tiktok-link ] && [ -n "$TIKTOK_CODE" ]; then APP=tiktok; fi
+          node autopost/autopost.mjs connect-$APP
