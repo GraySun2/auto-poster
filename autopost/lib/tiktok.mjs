@@ -17,7 +17,7 @@ export async function exchangeCode(env, code, redirectUri) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form({
-      client_key: env.TIKTOK_CLIENT_KEY, client_secret: env.TIKTOK_CLIENT_SECRET,
+      client_key: env.TIKTOK_CLIENT_KEY.trim(), client_secret: env.TIKTOK_CLIENT_SECRET.trim(),
       code, grant_type: "authorization_code", redirect_uri: redirectUri,
     }),
   }, "TikTok sign-in (code)");
@@ -30,8 +30,8 @@ async function accessToken(env) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form({
-      client_key: env.TIKTOK_CLIENT_KEY, client_secret: env.TIKTOK_CLIENT_SECRET,
-      refresh_token: env.TIKTOK_REFRESH_TOKEN, grant_type: "refresh_token",
+      client_key: env.TIKTOK_CLIENT_KEY.trim(), client_secret: env.TIKTOK_CLIENT_SECRET.trim(),
+      refresh_token: env.TIKTOK_REFRESH_TOKEN.trim(), grant_type: "refresh_token",
     }),
   }, "TikTok sign-in (refresh token)");
   if (!body.access_token) throw new Error(`TikTok sign-in failed: ${body.error_description ?? body.error ?? "no access token"}`);
