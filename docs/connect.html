@@ -34,12 +34,12 @@
 </head>
 <body>
 <main>
-  <h1>autopost</h1>
+  <h1 class="appname">autopost</h1>
   <p class="sub">Sends your finished short videos to your own TikTok drafts. You add the caption and post them yourself in the TikTok app.</p>
 
   <section id="start" class="card" hidden>
     <h2>Connect your TikTok account</h2>
-    <p>autopost asks for two permissions:</p>
+    <p><span class="appname">autopost</span> asks for two permissions:</p>
     <ol>
       <li><b>Your basic profile</b> (name and picture), to show which account is connected.</li>
       <li><b>Upload videos to your drafts.</b> Each video waits in your TikTok inbox. Nothing is posted until you open it, write the caption and tap Post.</li>
@@ -80,16 +80,21 @@
   const safe = (s, re) => (s && re.test(s) ? s : "");
   const here = location.origin + location.pathname;
 
-  // state comes back from TikTok unchanged: "autopost~<account>~<owner/repo>"
+  // state comes back from TikTok unchanged: "autopost~<account>~<owner/repo>~<app name>"
   const parts = (q.get("state") || "").split("~");
   const account = safe(q.get("account") || parts[1], /^[\w.-]{1,40}$/);
   const repo = safe(q.get("repo") || parts[2], /^[\w.-]{1,100}\/[\w.-]{1,100}$/);
+  const app = safe(q.get("app") || parts[3], /^[\w .-]{1,40}$/);
+  if (app) {
+    document.title = `${app} sign-in`;
+    for (const el of document.querySelectorAll(".appname")) el.textContent = app;
+  }
   const wf = repo ? `https://github.com/${repo}/actions/workflows/autopost-connect.yml` : "";
 
   const key = safe(q.get("key"), /^[\w-]{4,100}$/);
   const scope = q.get("scope") === "direct" ? "user.info.basic,video.publish" : "user.info.basic,video.upload";
   const signinUrl = key ? "https://www.tiktok.com/v2/auth/authorize/?" + new URLSearchParams({
-    client_key: key, scope, response_type: "code", redirect_uri: here, state: `autopost~${account || "main"}~${repo}`,
+    client_key: key, scope, response_type: "code", redirect_uri: here, state: `autopost~${account || "main"}~${repo}~${app}`,
   }) : "";
 
   if (q.get("code")) {

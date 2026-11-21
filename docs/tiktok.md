@@ -62,6 +62,7 @@ In the review form, describe it in plain words, for example: "A personal tool th
 
 ## Settings in `autopost/config.json`
 
+- `appName`: your TikTok app's name, shown on the sign-in page so it matches what TikTok shows (default `autopost`).
 - `method`: `inbox` or `direct` (above).
 - `privacy`: for direct posts only: `PUBLIC_TO_EVERYONE`, `MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` or `SELF_ONLY`. TikTok only allows what its creator-info check offers.
 - `isAigc`: adds TikTok's "Creator labeled as AI-generated" tag (direct posts; in inbox mode you set it in the app).
