@@ -115,6 +115,10 @@ The first line people see decides whether they stop scrolling. On a Short that i
 
 This template ships no assets. [docs/asset-library.md](docs/asset-library.md) tells your coding agent how to build and curate its own library in code (sprites, styles, characters, on-screen text, sounds), with a one-minute summary for people at the top.
 
+### Making the animation
+
+[docs/animation-process.md](docs/animation-process.md) is the 2D animation process up to export: timing the voice word by word, the storyboard, and the render draft, with the checks between them.
+
 ## Several accounts on the same app
 
 One copy can post to several channels: for example a main channel and a second one, each with its own YouTube, Instagram and TikTok. List them in `config.json`:
@@ -162,7 +166,7 @@ autopost/
 .github/workflows/
   autopost.yml          the scheduled job
   autopost-connect.yml  one-time sign-in for TikTok and Instagram
-docs/                   setup for each app
+docs/                   setup for each app, the asset library and the animation process
 media/                  your videos (or point mediaRoot elsewhere)
 ```
 
